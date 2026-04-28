@@ -1,0 +1,292 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-display: Georgia, "Times New Roman", serif;
+  --font-sans: "Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif;
+  --paper: #dfc8a8;
+  --wood: #4d2d1d;
+  --wood-dark: #28160f;
+  --lamp: #ffbb69;
+  --screen: #7ef5d6;
+  --screen-dim: #1a4c4a;
+  --ink: #19110e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(11, 8, 15, 0.92), rgba(34, 15, 7, 0.98)),
+    linear-gradient(120deg, rgba(128, 54, 19, 0.4), transparent 45%),
+    #140d11;
+  color: #f9f0e4;
+  font-family: var(--font-sans);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+@keyframes float {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes lampPulse {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06);
+  }
+}
+
+@keyframes flicker {
+  0%,
+  100% {
+    opacity: 0.95;
+  }
+  10% {
+    opacity: 0.88;
+  }
+  11% {
+    opacity: 0.98;
+  }
+  42% {
+    opacity: 0.9;
+  }
+  43% {
+    opacity: 1;
+  }
+  73% {
+    opacity: 0.92;
+  }
+}
+
+@keyframes signalSweep {
+  0% {
+    transform: translateY(-110%);
+    opacity: 0;
+  }
+  30% {
+    opacity: 0.6;
+  }
+  100% {
+    transform: translateY(110%);
+    opacity: 0;
+  }
+}
+
+@keyframes staticFlash {
+  0% {
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.95;
+  }
+  35% {
+    opacity: 0.18;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes slideUpFade {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes roomDrift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -4px, 0);
+  }
+}
+
+@keyframes rainDrop {
+  0% {
+    transform: translateY(-12%);
+  }
+  100% {
+    transform: translateY(12%);
+  }
+}
+
+@keyframes lightningPulse {
+  0%,
+  92%,
+  100% {
+    opacity: 0;
+  }
+  93% {
+    opacity: 0.18;
+  }
+  94% {
+    opacity: 0;
+  }
+  95% {
+    opacity: 0.08;
+  }
+}
+
+@keyframes cursorBlink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  46%,
+  100% {
+    opacity: 0.2;
+  }
+}
+
+.crt::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 18%),
+    repeating-linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.03) 0,
+      rgba(255, 255, 255, 0.03) 2px,
+      transparent 2px,
+      transparent 5px
+    );
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+.crt::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at center, transparent 45%, rgba(0, 0, 0, 0.22) 100%);
+  pointer-events: none;
+}
+
+.dial {
+  background:
+    radial-gradient(circle at 30% 30%, #7e5f42, #3e261a 65%, #24140c 100%);
+  box-shadow:
+    inset 0 2px 4px rgba(255, 255, 255, 0.15),
+    inset 0 -8px 16px rgba(0, 0, 0, 0.28),
+    0 12px 24px rgba(0, 0, 0, 0.35);
+}
+
+.wall-grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+.float-slow {
+  animation: float 7s ease-in-out infinite;
+}
+
+.lamp-pulse {
+  animation: lampPulse 4.5s ease-in-out infinite;
+}
+
+.crt-flicker {
+  animation: flicker 2.6s steps(1, end) infinite;
+}
+
+.signal-sweep::before {
+  content: "";
+  position: absolute;
+  inset: -20% 0;
+  background: linear-gradient(180deg, transparent, rgba(126, 245, 214, 0.4), transparent);
+  animation: signalSweep 2.4s linear infinite;
+  pointer-events: none;
+}
+
+.static-flash {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at center, rgba(255, 255, 255, 0.9), rgba(126, 245, 214, 0.25) 42%, transparent 72%),
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.18) 0,
+      rgba(255, 255, 255, 0.18) 2px,
+      transparent 2px,
+      transparent 5px
+    );
+  animation: staticFlash 850ms ease-out forwards;
+  pointer-events: none;
+}
+
+.scene-card {
+  animation: slideUpFade 700ms ease-out both;
+}
+
+.rain-window::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.06), transparent 22%, transparent 78%, rgba(255, 255, 255, 0.05));
+  pointer-events: none;
+}
+
+.window-rain-layer {
+  position: absolute;
+  inset: -15% 0;
+  background-image: repeating-linear-gradient(
+    100deg,
+    transparent 0 12px,
+    rgba(220, 243, 255, 0.2) 12px 14px,
+    transparent 14px 24px
+  );
+  opacity: 0.5;
+  animation: rainDrop 0.95s linear infinite;
+}
+
+.window-rain-layer-delayed {
+  opacity: 0.28;
+  animation-duration: 1.4s;
+  animation-delay: -0.3s;
+}
+
+.rain-flash {
+  background: radial-gradient(circle at 18% 18%, rgba(168, 216, 255, 0.16), transparent 22%);
+  animation: lightningPulse 9s linear infinite;
+}
+
+.room-idle {
+  animation: roomDrift 8s ease-in-out infinite;
+}
+
+.cursor-blink {
+  animation: cursorBlink 1.2s steps(1, end) infinite;
+}
