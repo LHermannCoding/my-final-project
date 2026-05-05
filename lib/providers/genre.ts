@@ -1,4 +1,4 @@
-const KNOWN_GENRES = [
+export const KNOWN_GENRES = [
   "alt-country",
   "ambient",
   "bedroom pop",
@@ -8,6 +8,7 @@ const KNOWN_GENRES = [
   "indie rock",
   "indietronica",
   "jazz",
+  "pop",
   "post-punk",
   "shoegaze",
   "slowcore",

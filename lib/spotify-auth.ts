@@ -4,9 +4,9 @@ import { cookies } from "next/headers";
 
 import { SpotifySession } from "@/lib/types";
 
-const SESSION_COOKIE = "spotify_session";
-const STATE_COOKIE = "spotify_auth_state";
-const VERIFIER_COOKIE = "spotify_code_verifier";
+export const SESSION_COOKIE = "spotify_session";
+export const STATE_COOKIE = "spotify_auth_state";
+export const VERIFIER_COOKIE = "spotify_code_verifier";
 
 function base64Url(input: Buffer): string {
   return input
@@ -24,24 +24,24 @@ export function createCodeChallenge(verifier: string): string {
   return base64Url(crypto.createHash("sha256").update(verifier).digest());
 }
 
-export async function setSpotifyAuthCookies(state: string, verifier: string) {
-  const cookieStore = await cookies();
-
-  cookieStore.set(STATE_COOKIE, state, {
+export function getSpotifyAuthCookieOptions() {
+  return {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: "lax" as const,
     secure: process.env.NODE_ENV === "production",
     path: "/",
     maxAge: 60 * 10
-  });
+  };
+}
 
-  cookieStore.set(VERIFIER_COOKIE, verifier, {
+export function getSpotifySessionCookieOptions() {
+  return {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: "lax" as const,
     secure: process.env.NODE_ENV === "production",
     path: "/",
-    maxAge: 60 * 10
-  });
+    maxAge: 60 * 60 * 24 * 7
+  };
 }
 
 export async function getSpotifyAuthCookies() {
@@ -57,17 +57,6 @@ export async function clearSpotifyAuthCookies() {
   const cookieStore = await cookies();
   cookieStore.delete(STATE_COOKIE);
   cookieStore.delete(VERIFIER_COOKIE);
-}
-
-export async function setSpotifySession(session: SpotifySession) {
-  const cookieStore = await cookies();
-  cookieStore.set(SESSION_COOKIE, JSON.stringify(session), {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 7
-  });
 }
 
 export async function getSpotifySession() {

@@ -6,9 +6,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { DiscoveryFilters, DiscoveryResponse, TrackCandidate } from "@/lib/types";
 import { formatNumber, formatReleaseDate } from "@/lib/utils";
 
-const FILTERS_STORAGE_KEY = "static.filters";
-const HISTORY_STORAGE_KEY = "static.history";
-
 const EMPTY_FILTERS: DiscoveryFilters = {
   genre: "",
   trackPlayCount: {},
@@ -69,6 +66,10 @@ type SpotifySessionPayload = {
   expiresAt: number | null;
 };
 
+type PlayerDeviceReadyPayload = {
+  device_id: string;
+};
+
 declare global {
   interface Window {
     Spotify?: {
@@ -86,33 +87,14 @@ declare global {
   }
 }
 
-function loadStoredJson<T>(key: string, fallback: T): T {
-  if (typeof window === "undefined") {
-    return fallback;
-  }
-
-  const value = window.localStorage.getItem(key);
-  if (!value) {
-    return fallback;
-  }
-
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return fallback;
-  }
-}
-
 function NumericInput({
   label,
   value,
-  onChange,
-  placeholder
+  onChange
 }: {
   label: string;
   value?: number;
   onChange: (value?: number) => void;
-  placeholder: string;
 }) {
   return (
     <label className="flex flex-col gap-2">
@@ -120,7 +102,6 @@ function NumericInput({
       <input
         className="rounded-2xl border border-stone-400/15 bg-black/20 px-4 py-3 text-sm text-stone-100 outline-none transition focus:border-amber-300/40 focus:bg-black/30"
         inputMode="numeric"
-        placeholder={placeholder}
         value={value ?? ""}
         onChange={(event) => {
           const next = event.target.value.trim();
@@ -187,49 +168,25 @@ export function StaticApp() {
   const [filters, setFilters] = useState<DiscoveryFilters>(EMPTY_FILTERS);
   const [currentTrack, setCurrentTrack] = useState<TrackCandidate | null>(null);
   const [history, setHistory] = useState<TrackCandidate[]>([]);
-  const [hasHydratedStorage, setHasHydratedStorage] = useState(false);
-  const [status, setStatus] = useState("Dial in a few constraints or leave everything blank.");
-  const [diagnostics, setDiagnostics] = useState<string[]>([]);
-  const [selectionInfo, setSelectionInfo] = useState<DiscoveryResponse["selection"] | null>(null);
-  const [resolvedGenre, setResolvedGenre] = useState<string | null>(null);
+  const [status, setStatus] = useState("Set a mood and pull a track.");
   const [isLoading, setIsLoading] = useState(false);
   const [spotifySession, setSpotifySession] = useState<SpotifySessionPayload | null>(null);
   const [spotifyPlayerReady, setSpotifyPlayerReady] = useState(false);
+  const [spotifyDeviceId, setSpotifyDeviceId] = useState<string | null>(null);
   const [view, setView] = useState<"settings" | "player">("settings");
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [ambientEnabled, setAmbientEnabled] = useState(true);
   const [clockTime, setClockTime] = useState(() => new Date());
   const audioRef = useRef<HTMLAudioElement>(null);
+  const previewPlaybackRequestRef = useRef(0);
   const ambientEnabledRef = useRef(ambientEnabled);
   const stormContextRef = useRef<AudioContext | null>(null);
   const stormMasterGainRef = useRef<GainNode | null>(null);
   const stormThunderIntervalRef = useRef<number | null>(null);
 
   useEffect(() => {
-    setFilters(loadStoredJson(FILTERS_STORAGE_KEY, EMPTY_FILTERS));
-    setHistory(loadStoredJson(HISTORY_STORAGE_KEY, []));
-    setHasHydratedStorage(true);
-  }, []);
-
-  useEffect(() => {
-    if (!hasHydratedStorage) {
-      return;
-    }
-
-    window.localStorage.setItem(FILTERS_STORAGE_KEY, JSON.stringify(filters));
-  }, [filters, hasHydratedStorage]);
-
-  useEffect(() => {
-    if (!hasHydratedStorage) {
-      return;
-    }
-
-    window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history.slice(0, 12)));
-  }, [history, hasHydratedStorage]);
-
-  useEffect(() => {
-    fetch("/api/spotify/session")
+    fetch("/api/spotify/session", { cache: "no-store" })
       .then((response) => response.json())
       .then((payload: SpotifySessionPayload) => setSpotifySession(payload))
       .catch(() =>
@@ -274,8 +231,10 @@ export function StaticApp() {
         volume: 0.7
       });
 
-      player.addListener("ready", () => {
+      player.addListener("ready", (payload: unknown) => {
+        const readyPayload = payload as PlayerDeviceReadyPayload;
         setSpotifyPlayerReady(true);
+        setSpotifyDeviceId(readyPayload.device_id);
       });
 
       player.addListener("initialization_error", () => {
@@ -432,6 +391,97 @@ export function StaticApp() {
     [currentTrack]
   );
 
+  async function playPreview(track: TrackCandidate) {
+    const audio = audioRef.current;
+    if (!audio || !track.previewUrl) {
+      return false;
+    }
+
+    const requestId = previewPlaybackRequestRef.current + 1;
+    previewPlaybackRequestRef.current = requestId;
+
+    try {
+      audio.pause();
+
+      if (audio.src !== track.previewUrl) {
+        audio.src = track.previewUrl;
+        audio.load();
+      } else {
+        audio.currentTime = 0;
+      }
+
+      await audio.play();
+
+      if (previewPlaybackRequestRef.current !== requestId) {
+        audio.pause();
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      if (previewPlaybackRequestRef.current !== requestId) {
+        return false;
+      }
+
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return false;
+      }
+
+      setPlaybackError("Browser autoplay was blocked. Press play on the preview deck.");
+      return false;
+    }
+  }
+
+  async function togglePreviewPlayback() {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    if (!audio.paused) {
+      previewPlaybackRequestRef.current += 1;
+      audio.pause();
+      return;
+    }
+
+    if (!currentTrack?.previewUrl) {
+      return;
+    }
+
+    await playPreview(currentTrack);
+  }
+
+  async function trySpotifyPlayback(track: TrackCandidate) {
+    if (!spotifySession?.connected || !spotifyPlayerReady || !spotifyDeviceId || !track.spotifyUri) {
+      return false;
+    }
+
+    try {
+      const transferResponse = await fetch("/api/spotify/player/transfer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId: spotifyDeviceId })
+      });
+      if (!transferResponse.ok) {
+        throw new Error("Transfer failed");
+      }
+
+      const playResponse = await fetch("/api/spotify/player/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId: spotifyDeviceId, spotifyUri: track.spotifyUri })
+      });
+      if (!playResponse.ok) {
+        throw new Error("Play failed");
+      }
+
+      return true;
+    } catch {
+      setPlaybackError("Spotify playback failed. Falling back to preview audio when available.");
+      return false;
+    }
+  }
+
   async function discover() {
     setIsLoading(true);
     setIsTransitioning(true);
@@ -442,6 +492,7 @@ export function StaticApp() {
       const response = await fetch("/api/discover", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        cache: "no-store",
         body: JSON.stringify(filters)
       });
 
@@ -451,22 +502,21 @@ export function StaticApp() {
 
       const payload = (await response.json()) as DiscoveryResponse;
       setCurrentTrack(payload.track);
-      setDiagnostics(payload.diagnostics);
-      setSelectionInfo(payload.selection);
-      setResolvedGenre(payload.resolvedGenre ?? null);
       setStatus(
         payload.mode === "live"
           ? `Live match found${payload.resolvedGenre ? ` via ${payload.resolvedGenre}` : ""}.`
-          : "Mock crate pulled because live providers are not fully configured yet."
+          : "Mock crate pulled after the live search path came up empty."
       );
       setHistory((previous) => [payload.track, ...previous.filter((item) => item.id !== payload.track.id)]);
       setView("player");
 
-      if (audioRef.current && payload.track.previewUrl) {
-        audioRef.current.src = payload.track.previewUrl;
-        void audioRef.current.play().catch(() => {
-          setPlaybackError("Browser autoplay was blocked. Press play on the preview deck.");
-        });
+      const playedViaSpotify = await trySpotifyPlayback(payload.track);
+
+      if (!playedViaSpotify && payload.track.previewUrl) {
+        await playPreview(payload.track);
+      } else if (playedViaSpotify && audioRef.current) {
+        previewPlaybackRequestRef.current += 1;
+        audioRef.current.pause();
       }
     } catch {
       setStatus("Discovery failed. Check configuration and try again.");
@@ -485,16 +535,28 @@ export function StaticApp() {
       const previousTrack = history[1];
       setCurrentTrack(previousTrack);
       setView("player");
-      if (audioRef.current && previousTrack.previewUrl) {
-        audioRef.current.src = previousTrack.previewUrl;
-        void audioRef.current.play().catch(() => {
-          setPlaybackError("Browser autoplay was blocked. Press play on the preview deck.");
-        });
-      }
+      void playPreview(previousTrack);
       return;
     }
 
     void discover();
+  }
+
+  function hardReset() {
+    setFilters(EMPTY_FILTERS);
+    setCurrentTrack(null);
+    setHistory([]);
+    setStatus("Set a mood and pull a track.");
+    setPlaybackError(null);
+    setView("settings");
+    previewPlaybackRequestRef.current += 1;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.removeAttribute("src");
+      audioRef.current.load();
+    }
+
+    window.location.replace(`/?refresh=${Date.now()}`);
   }
 
   return (
@@ -516,14 +578,10 @@ export function StaticApp() {
           <div className="relative flex h-full flex-col justify-between gap-8">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs uppercase tracking-[0.35em] text-amber-200/80">Static</p>
+                <p className="text-xs uppercase tracking-[0.35em] text-amber-200/80">Audio Obscura</p>
                 <h1 className="mt-3 max-w-lg font-display text-4xl leading-none text-amber-50 md:text-6xl">
-                  True-random music discovery for late-night crate digging.
+                  Audio Obscura
                 </h1>
-                <p className="mt-5 max-w-xl text-sm leading-6 text-stone-200/75 md:text-base">
-                  Build a tiny search radius or leave the dials wide open. Static treats discovery
-                  like tuning a room full of signal bleed, not asking an algorithm for permission.
-                </p>
               </div>
               <button
                 type="button"
@@ -551,7 +609,6 @@ export function StaticApp() {
 
               <NumericInput
                 label="Track Plays Min"
-                placeholder="0"
                 value={filters.trackPlayCount.min}
                 onChange={(value) =>
                   setFilters((previous) => ({
@@ -562,7 +619,6 @@ export function StaticApp() {
               />
               <NumericInput
                 label="Track Plays Max"
-                placeholder="5000"
                 value={filters.trackPlayCount.max}
                 onChange={(value) =>
                   setFilters((previous) => ({
@@ -573,7 +629,6 @@ export function StaticApp() {
               />
               <NumericInput
                 label="Artist Listeners Min"
-                placeholder="0"
                 value={filters.artistListeners.min}
                 onChange={(value) =>
                   setFilters((previous) => ({
@@ -584,7 +639,6 @@ export function StaticApp() {
               />
               <NumericInput
                 label="Artist Listeners Max"
-                placeholder="25000"
                 value={filters.artistListeners.max}
                 onChange={(value) =>
                   setFilters((previous) => ({
@@ -595,7 +649,6 @@ export function StaticApp() {
               />
               <NumericInput
                 label="BPM Min"
-                placeholder="70"
                 value={filters.bpm.min}
                 onChange={(value) =>
                   setFilters((previous) => ({
@@ -606,7 +659,6 @@ export function StaticApp() {
               />
               <NumericInput
                 label="BPM Max"
-                placeholder="130"
                 value={filters.bpm.max}
                 onChange={(value) =>
                   setFilters((previous) => ({
@@ -660,10 +712,10 @@ export function StaticApp() {
                 </p>
                 <button
                   type="button"
-                  onClick={() => setFilters(EMPTY_FILTERS)}
+                  onClick={hardReset}
                   className="text-[11px] uppercase tracking-[0.24em] text-stone-300/70 transition hover:text-stone-100"
                 >
-                  Reset Filters
+                  Hard Reset
                 </button>
               </div>
               <div className="grid gap-3 md:grid-cols-2">
@@ -683,49 +735,9 @@ export function StaticApp() {
               </div>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-3">
-              <div className="rounded-[1.5rem] border border-stone-400/15 bg-black/20 p-4">
-                <p className="text-[11px] uppercase tracking-[0.32em] text-stone-400">Signal Bias</p>
-                <p className="mt-2 text-sm text-stone-200/85">Low plays, low listeners, and weird genre prompts push the engine toward the outer edges.</p>
-              </div>
-              <div className="rounded-[1.5rem] border border-stone-400/15 bg-black/20 p-4">
-                <p className="text-[11px] uppercase tracking-[0.32em] text-stone-400">Session Memory</p>
-                <p className="mt-2 text-sm text-stone-200/85">Filters and recent pulls stay in the browser so the app feels like a running listening session.</p>
-              </div>
-              <div className="rounded-[1.5rem] border border-stone-400/15 bg-black/20 p-4">
-                <p className="text-[11px] uppercase tracking-[0.32em] text-stone-400">Live Path</p>
-                <p className="mt-2 text-sm text-stone-200/85">Spotify, Last.fm, and fuzzy genre resolution are already wired behind the current mock-safe loop.</p>
-              </div>
-            </div>
-
             <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
               <div>
                 <p className="text-sm text-amber-100/85">{status}</p>
-                {selectionInfo ? (
-                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] uppercase tracking-[0.22em] text-stone-300/75">
-                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      {selectionInfo.strategy}
-                    </span>
-                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      pool {selectionInfo.candidateCount}
-                    </span>
-                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      top sample {selectionInfo.sampledFromTop}
-                    </span>
-                    {resolvedGenre ? (
-                      <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                        mapped genre {resolvedGenre}
-                      </span>
-                    ) : null}
-                  </div>
-                ) : null}
-                {diagnostics.length > 0 ? (
-                  <ul className="mt-2 space-y-1 text-xs text-stone-300/80">
-                    {diagnostics.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                ) : null}
               </div>
               <button
                 type="button"
@@ -741,20 +753,6 @@ export function StaticApp() {
               </button>
             </div>
 
-            <div className="grid gap-4 rounded-[1.5rem] border border-stone-400/15 bg-black/20 p-4 text-sm text-stone-200 md:grid-cols-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.25em] text-stone-400">Playback</p>
-                <p className="mt-2">Preview audio works immediately in mock mode. Spotify streaming is wired for OAuth and the Web Playback SDK.</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.25em] text-stone-400">History</p>
-                <p className="mt-2">Your latest pulls and filter values are kept in local storage so the session survives refreshes.</p>
-              </div>
-              <div>
-                <p className="text-xs uppercase tracking-[0.25em] text-stone-400">Fallback</p>
-                <p className="mt-2">If live providers are missing or sparse, the engine widens the candidate pool instead of returning a dead end.</p>
-              </div>
-            </div>
           </div>
         </section>
 
@@ -901,15 +899,7 @@ export function StaticApp() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        if (audioRef.current) {
-                          if (audioRef.current.paused) {
-                            void audioRef.current.play();
-                          } else {
-                            audioRef.current.pause();
-                          }
-                        }
-                      }}
+                      onClick={() => void togglePreviewPlayback()}
                       className="dial h-14 w-14 rounded-full text-lg text-amber-50 transition hover:scale-105"
                     >
                       ⏯
@@ -927,7 +917,7 @@ export function StaticApp() {
 
                   <div className="mt-3 flex flex-wrap gap-2 text-xs text-stone-300/75">
                     <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      Spotify {spotifySession?.configured ? "configured" : "mock only"}
+                      Spotify {spotifySession?.connected ? "connected" : spotifySession?.configured ? "configured" : "mock only"}
                     </span>
                     <span className="rounded-full border border-stone-400/15 px-3 py-1">
                       Spotify {spotifySession?.connected ? "connected" : "not connected"}
@@ -935,19 +925,26 @@ export function StaticApp() {
                     <span className="rounded-full border border-stone-400/15 px-3 py-1">
                       SDK {spotifyPlayerReady ? "ready" : "idle"}
                     </span>
+                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
+                      Device {spotifyDeviceId ? "captured" : "none"}
+                    </span>
                   </div>
 
                   {playbackError ? <p className="mt-3 text-xs text-rose-300">{playbackError}</p> : null}
                 </div>
 
                 <div className="grid gap-3">
-                  {spotifySession?.configured ? (
+                  {spotifySession?.configured && !spotifySession?.connected ? (
                     <a
                       href="/api/spotify/login"
                       className="rounded-full border border-emerald-200/20 bg-emerald-300/10 px-5 py-3 text-center text-xs font-semibold uppercase tracking-[0.25em] text-emerald-100 transition hover:bg-emerald-300/20"
                     >
                       Connect Spotify
                     </a>
+                  ) : spotifySession?.connected ? (
+                    <div className="rounded-[1.4rem] border border-emerald-200/18 bg-emerald-300/10 px-4 py-3 text-center text-[11px] uppercase tracking-[0.22em] text-emerald-100/85">
+                      Spotify Connected
+                    </div>
                   ) : (
                     <div className="rounded-[1.4rem] border border-stone-300/12 bg-black/25 px-4 py-3 text-center text-[11px] uppercase tracking-[0.22em] text-stone-300/70">
                       Mock Public Build
@@ -966,37 +963,6 @@ export function StaticApp() {
                 </div>
               </div>
 
-              <div className="mt-4 rounded-[1.25rem] border border-stone-300/10 bg-black/20 p-4">
-                <p className="text-xs uppercase tracking-[0.28em] text-stone-400">Recent Pulls</p>
-                <div className="mt-3 grid gap-2">
-                  {history.length > 0 ? (
-                    history.slice(0, 5).map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                      onClick={() => {
-                          setCurrentTrack(item);
-                          setView("player");
-                          if (audioRef.current && item.previewUrl) {
-                            audioRef.current.src = item.previewUrl;
-                            void audioRef.current.play().catch(() => {
-                              setPlaybackError("Browser autoplay was blocked. Press play on the preview deck.");
-                            });
-                          }
-                        }}
-                        className="flex items-center justify-between rounded-2xl border border-stone-400/10 bg-stone-200/5 px-4 py-3 text-left text-sm text-stone-100 transition hover:bg-stone-200/10"
-                      >
-                        <span>{item.title} by {item.artist}</span>
-                        <span className="text-xs uppercase tracking-[0.2em] text-stone-400">
-                          {item.genreHint ?? item.source}
-                        </span>
-                      </button>
-                    ))
-                  ) : (
-                    <p className="text-sm text-stone-300/75">No history yet. Your last pulls will appear here.</p>
-                  )}
-                </div>
-              </div>
             </div>
           </div>
         </section>

@@ -1,7 +1,15 @@
 import { MOCK_TRACKS } from "@/lib/mock-data";
-import { resolveGenreInput } from "@/lib/providers/genre";
-import { getLastFmArtistListeners, getLastFmTrackInfo } from "@/lib/providers/lastfm";
-import { getSpotifyAppToken, searchSpotifyTracks } from "@/lib/providers/spotify";
+import { KNOWN_GENRES, resolveGenreInput } from "@/lib/providers/genre";
+import {
+  getLastFmArtistListeners,
+  getLastFmTrackInfo
+} from "@/lib/providers/lastfm";
+import {
+  getSpotifyAppToken,
+  searchSpotifyArtistsByGenre,
+  searchSpotifyTracks,
+  searchSpotifyTracksByGenre
+} from "@/lib/providers/spotify";
 import {
   DiscoveryFilters,
   DiscoveryResponse,
@@ -31,6 +39,9 @@ type CandidateEvaluation = {
   obscurityScore: number;
   totalScore: number;
 };
+
+const BROAD_RANDOM_TAGS = ["pop", "electronic", "indie rock", "jazz", "ambient", "soul"];
+const BROAD_SPOTIFY_GENRES = new Set(BROAD_RANDOM_TAGS);
 
 function genreMatches(track: TrackCandidate, genre: string): boolean {
   return !genre || !track.genreHint || track.genreHint.toLowerCase().includes(genre.toLowerCase());
@@ -128,6 +139,90 @@ function pickRandomTrack<T>(tracks: T[]): T {
   return tracks[Math.floor(Math.random() * tracks.length)];
 }
 
+function primaryArtistName(value: string): string {
+  return value
+    .split(",")[0]
+    .replace(/\s+feat\..*$/i, "")
+    .replace(/\s+ft\..*$/i, "")
+    .trim();
+}
+
+function sampleRandomItems<T>(items: T[], count: number): T[] {
+  const pool = [...items];
+  for (let index = pool.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]];
+  }
+
+  return pool.slice(0, Math.min(count, pool.length));
+}
+
+async function buildSpotifyCandidatePool(
+  resolvedGenre: string | undefined,
+  filters: DiscoveryFilters,
+  spotifyToken: string,
+  spotifyAccessToken?: string
+): Promise<{ tracks: TrackCandidate[]; diagnostics: string[] }> {
+  const diagnostics: string[] = [];
+  const requiresHeavierSampling =
+    hasRange(filters.trackPlayCount) || hasRange(filters.artistListeners) || hasRange(filters.bpm);
+
+  const trackOffsets = requiresHeavierSampling ? [0, 50] : [0];
+  const artistSampleCount = requiresHeavierSampling ? 4 : 2;
+  const useGenreTrackQuery = resolvedGenre ? !BROAD_SPOTIFY_GENRES.has(resolvedGenre) : false;
+
+  const genreQueries = resolvedGenre
+    ? [resolvedGenre]
+    : sampleRandomItems([...KNOWN_GENRES, ...BROAD_RANDOM_TAGS], 2);
+
+  async function gatherWithToken(token: string) {
+    return Promise.all(
+      genreQueries.map(async (genreQuery) => {
+        const [genreTracks, plainTextTracks, genreArtists] = await Promise.all([
+          useGenreTrackQuery
+            ? searchSpotifyTracksByGenre(genreQuery, token, [0])
+            : Promise.resolve([]),
+          searchSpotifyTracks(genreQuery, token, trackOffsets),
+          searchSpotifyArtistsByGenre(genreQuery, token, [0], 20)
+        ]);
+
+        const sampledArtists = sampleRandomItems(genreArtists, artistSampleCount);
+        const artistTrackBatches = await Promise.all(
+          sampledArtists.map((artist) =>
+            searchSpotifyTracks(`artist:"${primaryArtistName(artist.name)}"`, token, [0])
+          )
+        );
+
+        return [...genreTracks, ...plainTextTracks, ...artistTrackBatches.flat()];
+      })
+    );
+  }
+
+  const preferredToken = spotifyAccessToken ?? spotifyToken;
+  let candidateBatches = await gatherWithToken(preferredToken);
+
+  if (candidateBatches.flat().length === 0 && preferredToken !== spotifyToken) {
+    diagnostics.push("User Spotify search came up empty, retrying with the app token.");
+    candidateBatches = await gatherWithToken(spotifyToken);
+  }
+
+  const uniqueTracks = new Map<string, TrackCandidate>();
+  for (const track of candidateBatches.flat()) {
+    uniqueTracks.set(track.id, track);
+  }
+
+  if (resolvedGenre) {
+    diagnostics.push(`Built the live pool directly from Spotify search for "${resolvedGenre}".`);
+  } else {
+    diagnostics.push("Built the live pool directly from Spotify search across sampled genres.");
+  }
+
+  return {
+    tracks: Array.from(uniqueTracks.values()),
+    diagnostics
+  };
+}
+
 function selectCandidatePool(
   tracks: TrackCandidate[],
   filters: DiscoveryFilters,
@@ -139,14 +234,10 @@ function selectCandidatePool(
   const exact = evaluations.filter((item) => item.exactMatch);
 
   if (exact.length > 0) {
-    const exactTopSize =
-      filters.strictness === "adventurous"
-        ? Math.min(6, exact.length)
-        : filters.strictness === "balanced"
-          ? exact.length
-          : exact.length;
+    const exactTracks = exact.map((item) => item.track);
+    const exactTopSize = exactTracks.length;
     return {
-      selected: pickRandomTrack(exact.slice(0, exactTopSize).map((item) => item.track)),
+      selected: pickRandomTrack(exactTracks.slice(0, exactTopSize)),
       strategy: "exact",
       candidateCount: exact.length,
       exactCandidateCount: exact.length,
@@ -170,12 +261,14 @@ function selectCandidatePool(
         : filters.strictness === "adventurous"
           ? 6
           : 4;
-    const topPool = relaxed.slice(0, Math.min(relaxedWindow, relaxed.length));
+    const topPool = relaxed
+      .slice(0, Math.min(Math.max(relaxedWindow * 3, 8), relaxed.length))
+      .map((item) => item.track);
     diagnostics.push(
       `No exact matches found, selecting from ${topPool.length} high-scoring near matches.`
     );
     return {
-      selected: pickRandomTrack(topPool.map((item) => item.track)),
+      selected: pickRandomTrack(topPool),
       strategy: "relaxed",
       candidateCount: relaxed.length,
       exactCandidateCount: 0,
@@ -189,10 +282,12 @@ function selectCandidatePool(
       : filters.strictness === "adventurous"
         ? 7
         : 5;
-  const fallbackPool = evaluations.slice(0, Math.min(fallbackWindow, evaluations.length));
+  const fallbackPool = evaluations
+    .slice(0, Math.min(Math.max(fallbackWindow * 4, 10), evaluations.length))
+    .map((item) => item.track);
   diagnostics.push("No close candidates found, widening to the strongest fallback pool.");
   return {
-    selected: pickRandomTrack(fallbackPool.map((item) => item.track)),
+    selected: pickRandomTrack(fallbackPool),
     strategy: "fallback",
     candidateCount: evaluations.length,
     exactCandidateCount: 0,
@@ -224,7 +319,8 @@ async function discoverMock(
 async function discoverLive(
   filters: DiscoveryFilters,
   diagnostics: string[],
-  resolvedGenre?: string
+  resolvedGenre?: string,
+  spotifyAccessToken?: string
 ): Promise<DiscoveryResponse> {
   const spotifyToken = await getSpotifyAppToken();
   if (!spotifyToken) {
@@ -232,18 +328,44 @@ async function discoverLive(
     return discoverMock(filters, diagnostics, resolvedGenre);
   }
 
-  const query = resolvedGenre ? `genre:"${resolvedGenre}"` : "indie OR alternative";
-  const rawTracks = await searchSpotifyTracks(query, spotifyToken);
+  const livePool = await buildSpotifyCandidatePool(
+    resolvedGenre,
+    filters,
+    spotifyToken,
+    spotifyAccessToken
+  );
+  diagnostics.push(...livePool.diagnostics);
+  let rawTracks = livePool.tracks;
+
+  if (rawTracks.length > 0) {
+    rawTracks = sampleRandomItems(rawTracks, Math.min(rawTracks.length, hasRange(filters.trackPlayCount) || hasRange(filters.artistListeners) ? 60 : 30));
+  }
+
   if (rawTracks.length === 0) {
-    diagnostics.push("Spotify search returned no tracks, falling back to mock mode.");
-    return discoverMock(filters, diagnostics, resolvedGenre);
+    diagnostics.push("Primary Spotify search came up empty, widening to a broader Spotify pool.");
+    rawTracks = (
+      await buildSpotifyCandidatePool(
+        undefined,
+        { ...filters, genre: "" },
+        spotifyToken,
+        spotifyAccessToken
+      )
+    ).tracks;
+
+    if (rawTracks.length > 0) {
+      rawTracks = sampleRandomItems(rawTracks, Math.min(rawTracks.length, 40));
+    }
+  }
+
+  if (rawTracks.length === 0) {
+    throw new Error("Spotify search returned no compatible live tracks.");
   }
 
   const enriched = await Promise.all(
     rawTracks.map(async (track) => {
       const [trackInfo, artistListeners] = await Promise.all([
-        getLastFmTrackInfo(track.artist, track.title),
-        getLastFmArtistListeners(track.artist)
+        getLastFmTrackInfo(primaryArtistName(track.artist), track.title),
+        getLastFmArtistListeners(primaryArtistName(track.artist))
       ]);
 
       return {
@@ -275,7 +397,10 @@ async function discoverLive(
   };
 }
 
-export async function discoverTrack(input: Partial<DiscoveryFilters>): Promise<DiscoveryResponse> {
+export async function discoverTrack(
+  input: Partial<DiscoveryFilters>,
+  options?: { spotifyAccessToken?: string }
+): Promise<DiscoveryResponse> {
   const filters = sanitizeFilters(input);
   const diagnostics: string[] = [];
   const mode = process.env.DISCOVERY_MODE ?? "auto";

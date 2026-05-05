@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 
-import { createCodeChallenge, createRandomString, setSpotifyAuthCookies } from "@/lib/spotify-auth";
+import {
+  STATE_COOKIE,
+  VERIFIER_COOKIE,
+  createCodeChallenge,
+  createRandomString,
+  getSpotifyAuthCookieOptions
+} from "@/lib/spotify-auth";
 
 export async function GET() {
   if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_REDIRECT_URI) {
@@ -13,7 +19,6 @@ export async function GET() {
   const state = createRandomString();
   const verifier = createRandomString(48);
   const challenge = createCodeChallenge(verifier);
-  await setSpotifyAuthCookies(state, verifier);
 
   const params = new URLSearchParams({
     response_type: "code",
@@ -25,5 +30,11 @@ export async function GET() {
     code_challenge: challenge
   });
 
-  return NextResponse.redirect(`https://accounts.spotify.com/authorize?${params.toString()}`);
+  const response = NextResponse.redirect(
+    `https://accounts.spotify.com/authorize?${params.toString()}`
+  );
+  const cookieOptions = getSpotifyAuthCookieOptions();
+  response.cookies.set(STATE_COOKIE, state, cookieOptions);
+  response.cookies.set(VERIFIER_COOKIE, verifier, cookieOptions);
+  return response;
 }
