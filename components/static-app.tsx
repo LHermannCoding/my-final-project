@@ -3,7 +3,12 @@
 import Image from "next/image";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { DiscoveryFilters, DiscoveryResponse, TrackCandidate } from "@/lib/types";
+import {
+  DiscoveryFilters,
+  DiscoveryResponse,
+  DiscoveryStatusResponse,
+  TrackCandidate
+} from "@/lib/types";
 import { formatNumber, formatReleaseDate } from "@/lib/utils";
 
 const EMPTY_FILTERS: DiscoveryFilters = {
@@ -166,10 +171,13 @@ function StrictnessButton({
 
 export function StaticApp() {
   const [filters, setFilters] = useState<DiscoveryFilters>(EMPTY_FILTERS);
+  const [activeFilters, setActiveFilters] = useState<DiscoveryFilters | null>(null);
   const [currentTrack, setCurrentTrack] = useState<TrackCandidate | null>(null);
   const [history, setHistory] = useState<TrackCandidate[]>([]);
   const [status, setStatus] = useState("Set a mood and pull a track.");
   const [isLoading, setIsLoading] = useState(false);
+  const [queueStatus, setQueueStatus] = useState<DiscoveryStatusResponse["queue"] | null>(null);
+  const [resolvedGenre, setResolvedGenre] = useState<string | undefined>(undefined);
   const [spotifySession, setSpotifySession] = useState<SpotifySessionPayload | null>(null);
   const [spotifyPlayerReady, setSpotifyPlayerReady] = useState(false);
   const [spotifyDeviceId, setSpotifyDeviceId] = useState<string | null>(null);
@@ -184,6 +192,22 @@ export function StaticApp() {
   const stormContextRef = useRef<AudioContext | null>(null);
   const stormMasterGainRef = useRef<GainNode | null>(null);
   const stormThunderIntervalRef = useRef<number | null>(null);
+  const activeFiltersKey = useMemo(
+    () => (activeFilters ? JSON.stringify(activeFilters) : null),
+    [activeFilters]
+  );
+  const spotifyLoginHref = useMemo(() => {
+    const configuredAppUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+    if (!configuredAppUrl) {
+      return "/api/spotify/login";
+    }
+
+    try {
+      return new URL("/api/spotify/login", configuredAppUrl).toString();
+    } catch {
+      return "/api/spotify/login";
+    }
+  }, []);
 
   useEffect(() => {
     fetch("/api/spotify/session", { cache: "no-store" })
@@ -391,6 +415,67 @@ export function StaticApp() {
     [currentTrack]
   );
 
+  useEffect(() => {
+    if (!activeFilters) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function pollQueue() {
+      try {
+        const response = await fetch("/api/discover/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          cache: "no-store",
+          body: JSON.stringify(activeFilters)
+        });
+
+        const payload = (await response.json()) as DiscoveryStatusResponse | { error?: string };
+        if (cancelled) {
+          return;
+        }
+
+        if (!response.ok || !("queue" in payload)) {
+          throw new Error(
+            ("error" in payload && payload.error) || "Queue status request failed."
+          );
+        }
+
+        setQueueStatus(payload.queue);
+        setResolvedGenre(payload.resolvedGenre);
+
+        if (!payload.configured) {
+          setStatus("Live providers are missing. Add Spotify and Last.fm credentials.");
+          return;
+        }
+
+        if (!isLoading && payload.queue.queueSize === 0 && payload.queue.isFilling) {
+          setStatus(
+            payload.resolvedGenre
+              ? `Buffering exact ${payload.resolvedGenre} finds...`
+              : "Buffering exact random finds..."
+          );
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setQueueStatus(null);
+          setStatus(error instanceof Error ? error.message : "Queue status request failed.");
+        }
+      }
+    }
+
+    void pollQueue();
+    const interval = window.setInterval(() => {
+      void pollQueue();
+    }, 6000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [activeFilters, activeFiltersKey, isLoading]);
+
   async function playPreview(track: TrackCandidate) {
     const audio = audioRef.current;
     if (!audio || !track.previewUrl) {
@@ -482,10 +567,39 @@ export function StaticApp() {
     }
   }
 
-  async function discover() {
+  function explainPlaybackUnavailable(track: TrackCandidate) {
+    if (track.previewUrl) {
+      return;
+    }
+
+    if (!spotifySession?.connected) {
+      setPlaybackError(
+        "This track has no Spotify preview. Connect Spotify playback to hear full tracks."
+      );
+      return;
+    }
+
+    if (!spotifyPlayerReady || !spotifyDeviceId) {
+      setPlaybackError(
+        "Spotify is connected, but the Web Playback device is not ready yet. Wait a moment and try again."
+      );
+      return;
+    }
+
+    setPlaybackError(
+      "This track has no preview, and Spotify playback did not start. Spotify Premium playback may be required."
+    );
+  }
+
+  async function pullQueuedTrack(nextFilters: DiscoveryFilters, actionLabel: string) {
     setIsLoading(true);
     setIsTransitioning(true);
-    setStatus("Searching the stacks...");
+    setActiveFilters(nextFilters);
+    setStatus(
+      nextFilters.genre
+        ? `Waiting for an exact ${nextFilters.genre} match...`
+        : "Waiting for the random queue to land on a match..."
+    );
     setPlaybackError(null);
 
     try {
@@ -493,19 +607,25 @@ export function StaticApp() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
-        body: JSON.stringify(filters)
+        body: JSON.stringify(nextFilters)
       });
 
+      const payload = (await response.json()) as DiscoveryResponse | { error?: string };
+
       if (!response.ok) {
-        throw new Error("Discovery request failed.");
+        throw new Error(("error" in payload && payload.error) || `${actionLabel} failed.`);
       }
 
-      const payload = (await response.json()) as DiscoveryResponse;
+      if (!("track" in payload)) {
+        throw new Error(`${actionLabel} failed.`);
+      }
+
       setCurrentTrack(payload.track);
+      setQueueStatus(payload.queue);
+      setResolvedGenre(payload.resolvedGenre);
       setStatus(
-        payload.mode === "live"
-          ? `Live match found${payload.resolvedGenre ? ` via ${payload.resolvedGenre}` : ""}.`
-          : "Mock crate pulled after the live search path came up empty."
+        `Live match found${payload.resolvedGenre ? ` via ${payload.resolvedGenre}` : ""}. ` +
+          `${payload.queue.queueSize} waiting in the buffer.`
       );
       setHistory((previous) => [payload.track, ...previous.filter((item) => item.id !== payload.track.id)]);
       setView("player");
@@ -517,17 +637,23 @@ export function StaticApp() {
       } else if (playedViaSpotify && audioRef.current) {
         previewPlaybackRequestRef.current += 1;
         audioRef.current.pause();
+      } else if (!playedViaSpotify) {
+        explainPlaybackUnavailable(payload.track);
       }
-    } catch {
-      setStatus("Discovery failed. Check configuration and try again.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : `${actionLabel} failed.`);
     } finally {
       setIsLoading(false);
       window.setTimeout(() => setIsTransitioning(false), 700);
     }
   }
 
+  async function discover() {
+    await pullQueuedTrack(filters, "Discovery");
+  }
+
   function stepHistory(direction: "back" | "next") {
-    if (history.length === 0) {
+    if (direction === "back" && history.length === 0) {
       return;
     }
 
@@ -539,13 +665,16 @@ export function StaticApp() {
       return;
     }
 
-    void discover();
+    void pullQueuedTrack(activeFilters ?? filters, "Queue fetch");
   }
 
   function hardReset() {
     setFilters(EMPTY_FILTERS);
+    setActiveFilters(null);
     setCurrentTrack(null);
     setHistory([]);
+    setQueueStatus(null);
+    setResolvedGenre(undefined);
     setStatus("Set a mood and pull a track.");
     setPlaybackError(null);
     setView("settings");
@@ -556,7 +685,6 @@ export function StaticApp() {
       audioRef.current.load();
     }
 
-    window.location.replace(`/?refresh=${Date.now()}`);
   }
 
   return (
@@ -673,32 +801,18 @@ export function StaticApp() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-[11px] uppercase tracking-[0.3em] text-stone-400">
-                    Match Strictness
+                    Queue Engine
                   </p>
                   <p className="mt-1 text-sm text-stone-200/75">
-                    Control how hard the engine clings to the filter box when results get sparse.
+                    The backend now waits for exact live matches and keeps a slow background buffer warm.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <StrictnessButton
-                    label="Exact"
-                    active={filters.strictness === "exact"}
+                    label="Exact Live"
+                    active
                     onClick={() =>
                       setFilters((previous) => ({ ...previous, strictness: "exact" }))
-                    }
-                  />
-                  <StrictnessButton
-                    label="Balanced"
-                    active={filters.strictness === "balanced"}
-                    onClick={() =>
-                      setFilters((previous) => ({ ...previous, strictness: "balanced" }))
-                    }
-                  />
-                  <StrictnessButton
-                    label="Adventurous"
-                    active={filters.strictness === "adventurous"}
-                    onClick={() =>
-                      setFilters((previous) => ({ ...previous, strictness: "adventurous" }))
                     }
                   />
                 </div>
@@ -738,6 +852,13 @@ export function StaticApp() {
             <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
               <div>
                 <p className="text-sm text-amber-100/85">{status}</p>
+                <p className="mt-2 text-xs uppercase tracking-[0.24em] text-stone-400">
+                  {queueStatus
+                    ? `Queue ${queueStatus.queueSize}/${queueStatus.targetSize}${
+                        queueStatus.isFilling ? "  .  warming" : ""
+                      }${resolvedGenre ? `  .  ${resolvedGenre}` : ""}`
+                    : "Queue idle"}
+                </p>
               </div>
               <button
                 type="button"
@@ -834,7 +955,16 @@ export function StaticApp() {
                 {isTransitioning ? <div className="static-flash" /> : null}
                 <div className="flex items-center justify-between gap-3 pb-4 text-[11px] uppercase tracking-[0.35em] text-emerald-100/65">
                   <span>CRT Playback</span>
-                  <span>{currentTrack?.source === "spotify" ? "Live Signal" : "Mock Signal"}</span>
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={`h-2.5 w-2.5 rounded-full ${
+                        isLoading || queueStatus?.isFilling
+                          ? "animate-pulse bg-amber-300 shadow-[0_0_16px_rgba(252,211,77,0.75)]"
+                          : "bg-emerald-300 shadow-[0_0_16px_rgba(110,231,183,0.55)]"
+                      }`}
+                    />
+                    {isLoading ? "Waiting On Queue" : queueStatus?.isFilling ? "Buffering" : "Live Signal"}
+                  </span>
                 </div>
 
                 {currentTrack ? (
@@ -881,7 +1011,7 @@ export function StaticApp() {
                   <div className="flex min-h-80 flex-col items-center justify-center rounded-[1.4rem] border border-dashed border-emerald-100/15 bg-emerald-100/5 px-8 text-center">
                     <p className="font-display text-3xl text-emerald-50">No signal yet</p>
                     <p className="mt-3 max-w-sm text-sm text-emerald-100/65">
-                      Hit discover and the TV will lock onto a random track from the current filter space.
+                      Hit discover and the backend will wait for an exact live match, then keep the queue warm behind the scenes.
                     </p>
                   </div>
                 )}
@@ -917,7 +1047,7 @@ export function StaticApp() {
 
                   <div className="mt-3 flex flex-wrap gap-2 text-xs text-stone-300/75">
                     <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      Spotify {spotifySession?.connected ? "connected" : spotifySession?.configured ? "configured" : "mock only"}
+                      Queue {queueStatus ? `${queueStatus.queueSize}/${queueStatus.targetSize}` : "idle"}
                     </span>
                     <span className="rounded-full border border-stone-400/15 px-3 py-1">
                       Spotify {spotifySession?.connected ? "connected" : "not connected"}
@@ -928,7 +1058,19 @@ export function StaticApp() {
                     <span className="rounded-full border border-stone-400/15 px-3 py-1">
                       Device {spotifyDeviceId ? "captured" : "none"}
                     </span>
+                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
+                      Preview {currentTrack?.previewUrl ? "available" : "missing"}
+                    </span>
+                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
+                      Engine {queueStatus?.isFilling || isLoading ? "warming" : "ready"}
+                    </span>
                   </div>
+
+                  {!spotifySession?.connected ? (
+                    <p className="mt-3 text-xs text-amber-200/85">
+                      Song playback on the web page only works when Spotify is connected.
+                    </p>
+                  ) : null}
 
                   {playbackError ? <p className="mt-3 text-xs text-rose-300">{playbackError}</p> : null}
                 </div>
@@ -936,7 +1078,7 @@ export function StaticApp() {
                 <div className="grid gap-3">
                   {spotifySession?.configured && !spotifySession?.connected ? (
                     <a
-                      href="/api/spotify/login"
+                      href={spotifyLoginHref}
                       className="rounded-full border border-emerald-200/20 bg-emerald-300/10 px-5 py-3 text-center text-xs font-semibold uppercase tracking-[0.25em] text-emerald-100 transition hover:bg-emerald-300/20"
                     >
                       Connect Spotify
@@ -947,7 +1089,7 @@ export function StaticApp() {
                     </div>
                   ) : (
                     <div className="rounded-[1.4rem] border border-stone-300/12 bg-black/25 px-4 py-3 text-center text-[11px] uppercase tracking-[0.22em] text-stone-300/70">
-                      Mock Public Build
+                      Live Queue Only
                     </div>
                   )}
                   {currentTrack?.externalUrl ? (

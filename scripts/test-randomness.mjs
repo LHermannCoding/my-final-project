@@ -15,6 +15,20 @@ async function discover(payload) {
   return response.json();
 }
 
+async function getQueueStatus(payload) {
+  const response = await fetch(`${BASE_URL}/api/discover/status`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    throw new Error(`Queue status request failed with status ${response.status}.`);
+  }
+
+  return response.json();
+}
+
 function summarizeCounts(items) {
   return Object.entries(items)
     .sort((left, right) => right[1] - left[1])
@@ -40,6 +54,23 @@ async function sampleScenario(name, payload) {
 }
 
 async function run() {
+  const queueStatus = await getQueueStatus({});
+  if (!queueStatus.configured) {
+    console.log(
+      JSON.stringify(
+        {
+          baseUrl: BASE_URL,
+          samples: 0,
+          skipped: true,
+          reason: "Live providers are not configured."
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
+
   const scenarios = await Promise.all([
     sampleScenario("pure-random", {}),
     sampleScenario("tight-shoegaze", {

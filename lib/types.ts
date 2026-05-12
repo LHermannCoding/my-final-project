@@ -11,7 +11,7 @@ export type DiscoveryFilters = {
   strictness: "exact" | "balanced" | "adventurous";
 };
 
-export type DiscoverySelectionStrategy = "exact" | "relaxed" | "fallback";
+export type DiscoverySelectionStrategy = "queued";
 
 export type TrackSource = "mock" | "spotify";
 
@@ -35,7 +35,7 @@ export type TrackCandidate = {
 export type DiscoveryResponse = {
   track: TrackCandidate;
   resolvedGenre?: string;
-  mode: "mock" | "live";
+  mode: "live";
   diagnostics: string[];
   selection: {
     strategy: DiscoverySelectionStrategy;
@@ -43,6 +43,23 @@ export type DiscoveryResponse = {
     exactCandidateCount: number;
     sampledFromTop: number;
   };
+  queue: DiscoveryQueueSnapshot;
+};
+
+export type DiscoveryQueueSnapshot = {
+  key: string;
+  queueSize: number;
+  targetSize: number;
+  isFilling: boolean;
+  isWaitingForTrack: boolean;
+  lastError?: string;
+};
+
+export type DiscoveryStatusResponse = {
+  configured: boolean;
+  resolvedGenre?: string;
+  diagnostics: string[];
+  queue: DiscoveryQueueSnapshot;
 };
 
 export type SpotifySession = {

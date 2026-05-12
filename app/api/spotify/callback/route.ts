@@ -9,13 +9,30 @@ import {
   getSpotifySessionCookieOptions
 } from "@/lib/spotify-auth";
 
-function getAppRedirectUrl(path: string, requestUrl: string): URL {
+function getConfiguredAppUrl(): URL | null {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
   if (baseUrl) {
-    return new URL(path, baseUrl);
+    try {
+      return new URL(baseUrl);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+function getAppRedirectUrl(path: string, requestUrl: string): URL {
+  const configuredAppUrl = getConfiguredAppUrl();
+  if (configuredAppUrl) {
+    return new URL(path, configuredAppUrl);
   }
 
   return new URL(path, requestUrl);
+}
+
+function getSpotifyRedirectUri(): string {
+  return process.env.SPOTIFY_REDIRECT_URI?.trim() ?? "";
 }
 
 export async function GET(request: NextRequest) {
@@ -41,7 +58,7 @@ export async function GET(request: NextRequest) {
   try {
     const clientId = process.env.SPOTIFY_CLIENT_ID ?? "";
     const clientSecret = process.env.SPOTIFY_CLIENT_SECRET ?? "";
-    const redirectUri = process.env.SPOTIFY_REDIRECT_URI ?? "";
+    const redirectUri = getSpotifyRedirectUri();
 
     const response = await fetch("https://accounts.spotify.com/api/token", {
       method: "POST",

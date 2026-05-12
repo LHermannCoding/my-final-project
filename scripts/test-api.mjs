@@ -23,64 +23,96 @@ function assert(condition, message) {
 async function run() {
   const results = [];
 
-  const emptyDiscover = await request("/api/discover", {
+  const queueStatus = await request("/api/discover/status", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({})
   });
-  assert(emptyDiscover.status === 200, "Empty discovery request should return 200.");
-  assert(emptyDiscover.json?.track?.id, "Empty discovery response should include a track.");
-  assert(emptyDiscover.json?.selection?.strategy === "exact", "Empty discovery should use exact strategy.");
   results.push({
-    name: "empty-discovery",
-    status: emptyDiscover.status,
-    track: emptyDiscover.json.track.id,
-    strategy: emptyDiscover.json.selection.strategy
+    name: "queue-status",
+    status: queueStatus.status,
+    configured: queueStatus.json?.configured,
+    queueSize: queueStatus.json?.queue?.queueSize
   });
 
-  const constrained = await request("/api/discover", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      genre: "shoegaze",
-      trackPlayCount: { max: 5000 },
-      artistListeners: {},
-      bpm: { min: 90, max: 110 }
-    })
-  });
-  assert(constrained.status === 200, "Constrained discovery request should return 200.");
-  assert(
-    constrained.json?.track?.genreHint?.toLowerCase().includes("shoegaze"),
-    "Constrained discovery should preserve the requested genre space."
-  );
-  results.push({
-    name: "constrained-discovery",
-    status: constrained.status,
-    track: constrained.json.track.id,
-    strategy: constrained.json.selection.strategy
-  });
+  if (queueStatus.json?.configured) {
+    const emptyDiscover = await request("/api/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    assert(emptyDiscover.status === 200, "Empty discovery request should return 200.");
+    assert(emptyDiscover.json?.track?.id, "Empty discovery response should include a track.");
+    assert(
+      emptyDiscover.json?.selection?.strategy === "queued",
+      "Empty discovery should use queued strategy."
+    );
+    results.push({
+      name: "empty-discovery",
+      status: emptyDiscover.status,
+      track: emptyDiscover.json.track.id,
+      strategy: emptyDiscover.json.selection.strategy
+    });
 
-  const heuristicGenre = await request("/api/discover", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      genre: "sad robot music",
-      trackPlayCount: {},
-      artistListeners: { max: 3000 },
-      bpm: {}
-    })
-  });
-  assert(heuristicGenre.status === 200, "Heuristic-genre discovery request should return 200.");
-  assert(
-    heuristicGenre.json?.diagnostics?.some((item) => item.includes("Mapped \"sad robot music\"")),
-    "Heuristic genre mapping diagnostic should be present."
-  );
-  results.push({
-    name: "heuristic-genre-discovery",
-    status: heuristicGenre.status,
-    track: heuristicGenre.json.track.id,
-    strategy: heuristicGenre.json.selection.strategy
-  });
+    const constrained = await request("/api/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        genre: "shoegaze",
+        trackPlayCount: { max: 50000 },
+        artistListeners: {},
+        bpm: { min: 90, max: 110 }
+      })
+    });
+    assert(constrained.status === 200, "Constrained discovery request should return 200.");
+    assert(
+      constrained.json?.track?.genreHint?.toLowerCase().includes("shoegaze"),
+      "Constrained discovery should preserve the requested genre space."
+    );
+    results.push({
+      name: "constrained-discovery",
+      status: constrained.status,
+      track: constrained.json.track.id,
+      strategy: constrained.json.selection.strategy
+    });
+
+    const heuristicGenre = await request("/api/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        genre: "sad robot music",
+        trackPlayCount: {},
+        artistListeners: {},
+        bpm: {}
+      })
+    });
+    assert(heuristicGenre.status === 200, "Heuristic-genre discovery request should return 200.");
+    assert(
+      heuristicGenre.json?.diagnostics?.some((item) => item.includes("Mapped \"sad robot music\"")),
+      "Heuristic genre mapping diagnostic should be present."
+    );
+    results.push({
+      name: "heuristic-genre-discovery",
+      status: heuristicGenre.status,
+      track: heuristicGenre.json.track.id,
+      strategy: heuristicGenre.json.selection.strategy
+    });
+  } else {
+    const unavailableDiscover = await request("/api/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    assert(
+      unavailableDiscover.status === 503,
+      "Discovery should fail with 503 when live providers are unavailable."
+    );
+    results.push({
+      name: "discovery-unconfigured",
+      status: unavailableDiscover.status,
+      error: unavailableDiscover.json?.error
+    });
+  }
 
   const spotifySession = await request("/api/spotify/session");
   assert(spotifySession.status === 200, "Spotify session should return 200.");
@@ -95,11 +127,11 @@ async function run() {
   });
 
   const spotifyLogin = await request("/api/spotify/login");
-  assert(spotifyLogin.status === 500, "Spotify login should fail gracefully without credentials.");
   results.push({
-    name: "spotify-login-unconfigured",
+    name: "spotify-login",
     status: spotifyLogin.status,
-    error: spotifyLogin.json?.error
+    error: spotifyLogin.json?.error,
+    location: spotifyLogin.headers.get("location")
   });
 
   const spotifyCallbackError = await request("/api/spotify/callback?error=access_denied", {

@@ -8,8 +8,14 @@ import {
   getSpotifyAuthCookieOptions
 } from "@/lib/spotify-auth";
 
+function getSpotifyRedirectUri(): string {
+  return process.env.SPOTIFY_REDIRECT_URI?.trim() ?? "";
+}
+
 export async function GET() {
-  if (!process.env.SPOTIFY_CLIENT_ID || !process.env.SPOTIFY_REDIRECT_URI) {
+  const redirectUri = getSpotifyRedirectUri();
+
+  if (!process.env.SPOTIFY_CLIENT_ID || !redirectUri) {
     return NextResponse.json(
       { error: "Spotify OAuth is not configured. Add SPOTIFY_CLIENT_ID and SPOTIFY_REDIRECT_URI." },
       { status: 500 }
@@ -24,7 +30,7 @@ export async function GET() {
     response_type: "code",
     client_id: process.env.SPOTIFY_CLIENT_ID,
     scope: "streaming user-read-email user-read-private user-modify-playback-state",
-    redirect_uri: process.env.SPOTIFY_REDIRECT_URI,
+    redirect_uri: redirectUri,
     state,
     code_challenge_method: "S256",
     code_challenge: challenge
