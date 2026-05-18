@@ -84,6 +84,12 @@ type PlayerDeviceReadyPayload = {
   device_id: string;
 };
 
+type SpotifyPlayerState = {
+  paused: boolean;
+  position: number;
+  duration: number;
+};
+
 declare global {
   interface Window {
     Spotify?: {
@@ -96,6 +102,9 @@ declare global {
         connect: () => Promise<boolean>;
         disconnect: () => void;
         togglePlay: () => Promise<void>;
+        setVolume: (volume: number) => Promise<void>;
+        seek: (positionMs: number) => Promise<void>;
+        getCurrentState: () => Promise<SpotifyPlayerState | null>;
       };
     };
     onSpotifyWebPlaybackSDKReady?: () => void;
@@ -193,6 +202,9 @@ export function StaticApp() {
   const [audioCurrentTime, setAudioCurrentTime] = useState(0);
   const [audioDuration, setAudioDuration] = useState(0);
   const [audioVolume, setAudioVolume] = useState(0.7);
+  const [spotifyPosition, setSpotifyPosition] = useState(0);
+  const [spotifyDuration, setSpotifyDuration] = useState(0);
+  const [playbackSource, setPlaybackSource] = useState<"spotify" | "preview" | null>(null);
   const [clockTime, setClockTime] = useState(() => new Date());
   const genrePlaceholder = useTypingPlaceholder(PLACEHOLDER_GENRES);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -203,6 +215,7 @@ export function StaticApp() {
   const historyRef = useRef<TrackCandidate[]>([]);
   const isNavigatingRef = useRef(false);
   const pendingNavRef = useRef<"back" | "next" | null>(null);
+  const spotifyLastStateRef = useRef<{ position: number; timestamp: number; paused: boolean }>({ position: 0, timestamp: 0, paused: true });
   const stormContextRef = useRef<AudioContext | null>(null);
   const stormMasterGainRef = useRef<GainNode | null>(null);
   const stormThunderIntervalRef = useRef<number | null>(null);
@@ -306,7 +319,11 @@ export function StaticApp() {
 
       player.addListener("player_state_changed", (state: unknown) => {
         if (state && typeof state === "object" && "paused" in state) {
-          setIsPlaying(!(state as { paused: boolean }).paused);
+          const s = state as SpotifyPlayerState;
+          setIsPlaying(!s.paused);
+          setSpotifyPosition(s.position);
+          setSpotifyDuration(s.duration);
+          spotifyLastStateRef.current = { position: s.position, timestamp: Date.now(), paused: s.paused };
         }
       });
 
@@ -443,6 +460,23 @@ export function StaticApp() {
   }, []);
 
   useEffect(() => {
+    if (playbackSource !== "spotify" || !isPlaying) return;
+
+    const interval = setInterval(() => {
+      const last = spotifyLastStateRef.current;
+      if (!last.paused && last.timestamp > 0) {
+        const elapsed = Date.now() - last.timestamp;
+        setSpotifyPosition((prev) => {
+          const next = last.position + elapsed;
+          return next > prev ? next : prev;
+        });
+      }
+    }, 500);
+
+    return () => clearInterval(interval);
+  }, [playbackSource, isPlaying]);
+
+  useEffect(() => {
     const gainNode = stormMasterGainRef.current;
     const context = stormContextRef.current;
     if (!gainNode || !context) {
@@ -553,6 +587,7 @@ export function StaticApp() {
       }
 
       playbackSourceRef.current = "preview";
+      setPlaybackSource("preview");
       setIsPlaying(true);
       return true;
     } catch (error) {
@@ -616,6 +651,10 @@ export function StaticApp() {
       }
 
       playbackSourceRef.current = "spotify";
+      setPlaybackSource("spotify");
+      setSpotifyPosition(0);
+      setSpotifyDuration(0);
+      spotifyLastStateRef.current = { position: 0, timestamp: Date.now(), paused: false };
       setIsPlaying(true);
       return true;
     } catch {
@@ -653,6 +692,9 @@ export function StaticApp() {
     setIsTransitioning(true);
     setIsPlaying(false);
     setAudioCurrentTime(0);
+    setSpotifyPosition(0);
+    setSpotifyDuration(0);
+    spotifyLastStateRef.current = { position: 0, timestamp: 0, paused: true };
     setActiveFilters(nextFilters);
     setStatus(
       nextFilters.genre
@@ -763,6 +805,10 @@ export function StaticApp() {
     setStatus("Set a mood and pull a track.");
     setPlaybackError(null);
     setView("settings");
+    setPlaybackSource(null);
+    setSpotifyPosition(0);
+    setSpotifyDuration(0);
+    spotifyLastStateRef.current = { position: 0, timestamp: 0, paused: true };
     previewPlaybackRequestRef.current += 1;
     if (audioRef.current) {
       audioRef.current.pause();
@@ -839,6 +885,9 @@ export function StaticApp() {
 
   const isCurrentTrackSaved = currentTrack ? savedTracks.some((t) => t.id === currentTrack.id) : false;
   const canGoBack = history.length > 1 && historyIndexRef.current < history.length - 1;
+
+  const displayCurrentTime = playbackSource === "spotify" ? spotifyPosition / 1000 : audioCurrentTime;
+  const displayDuration = playbackSource === "spotify" ? spotifyDuration / 1000 : audioDuration;
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-noise wall-grid px-4 py-6 text-stone-50 md:px-8">
@@ -1206,8 +1255,8 @@ export function StaticApp() {
                     <button
                       type="button"
                       onClick={() => void likeOnSpotify()}
-                      disabled={!currentTrack || !spotifySession?.connected || likedStatus === "saving"}
-                      title="Add to Spotify Liked Songs"
+                      disabled={!currentTrack?.spotifyUri || !spotifySession?.connected || likedStatus === "saving"}
+                      title={!spotifySession?.connected ? "Connect Spotify to like tracks" : !currentTrack?.spotifyUri ? "No Spotify track loaded" : "Add to Spotify Liked Songs"}
                       className={`dial h-12 w-12 rounded-full text-base transition hover:scale-105 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100 ${
                         likedStatus === "saved" ? "text-emerald-300" : likedStatus === "error" ? "text-rose-300" : "text-amber-50"
                       }`}
@@ -1257,20 +1306,27 @@ export function StaticApp() {
                   <input
                     type="range"
                     min={0}
-                    max={audioDuration > 0 ? audioDuration : 1}
-                    step={1}
-                    value={Math.floor(audioCurrentTime)}
-                    disabled={audioDuration === 0}
+                    max={displayDuration > 0 ? displayDuration : 1}
+                    step={0.5}
+                    value={displayCurrentTime}
+                    disabled={displayDuration === 0}
                     onChange={(e) => {
                       const t = Number(e.target.value);
-                      setAudioCurrentTime(t);
-                      if (audioRef.current) audioRef.current.currentTime = t;
+                      if (playbackSource === "spotify" && spotifyPlayerRef.current) {
+                        const posMs = Math.round(t * 1000);
+                        void spotifyPlayerRef.current.seek(posMs);
+                        setSpotifyPosition(posMs);
+                        spotifyLastStateRef.current = { ...spotifyLastStateRef.current, position: posMs, timestamp: Date.now() };
+                      } else {
+                        setAudioCurrentTime(t);
+                        if (audioRef.current) audioRef.current.currentTime = t;
+                      }
                     }}
                     className="w-full accent-amber-300 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                   />
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-xs tabular-nums text-stone-400">
-                      {formatTime(audioCurrentTime)} / {formatTime(audioDuration)}
+                      {formatTime(displayCurrentTime)} / {formatTime(displayDuration)}
                     </span>
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-stone-400">Vol</span>
@@ -1283,7 +1339,11 @@ export function StaticApp() {
                         onChange={(e) => {
                           const v = Number(e.target.value);
                           setAudioVolume(v);
-                          if (audioRef.current) audioRef.current.volume = v;
+                          if (playbackSource === "spotify" && spotifyPlayerRef.current) {
+                            void spotifyPlayerRef.current.setVolume(v);
+                          } else if (audioRef.current) {
+                            audioRef.current.volume = v;
+                          }
                         }}
                         className="w-20 accent-amber-300 cursor-pointer"
                       />
