@@ -77,13 +77,15 @@ export async function GET(request: NextRequest) {
 
     if (!response.ok) {
       const errorBody = await response.text();
-    console.error("Spotify token exchange failed", {
-        status: response.status,
-        body: errorBody
-      });
+      console.error("Spotify token exchange failed", { status: response.status, body: errorBody });
+      let spotifyError = "token_exchange_failed";
+      try {
+        const parsed = JSON.parse(errorBody) as { error?: string };
+        if (parsed.error) spotifyError = parsed.error;
+      } catch {}
       await clearSpotifySession();
       const redirectResponse = NextResponse.redirect(
-        getAppRedirectUrl("/?spotify=token_exchange_failed", request.url)
+        getAppRedirectUrl(`/?spotify=${encodeURIComponent(spotifyError)}`, request.url)
       );
       redirectResponse.cookies.delete(STATE_COOKIE);
       redirectResponse.cookies.delete(VERIFIER_COOKIE);

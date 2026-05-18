@@ -35,6 +35,7 @@ export type TrackCandidate = {
 export type DiscoveryResponse = {
   track: TrackCandidate;
   resolvedGenre?: string;
+  mappedFromGenre?: string;
   mode: "live";
   diagnostics: string[];
   selection: {
@@ -58,6 +59,7 @@ export type DiscoveryQueueSnapshot = {
 export type DiscoveryStatusResponse = {
   configured: boolean;
   resolvedGenre?: string;
+  mappedFromGenre?: string;
   diagnostics: string[];
   queue: DiscoveryQueueSnapshot;
 };

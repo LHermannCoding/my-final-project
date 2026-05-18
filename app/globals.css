@@ -4,7 +4,7 @@
 
 :root {
   --font-display: Georgia, "Times New Roman", serif;
-  --font-sans: "Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif;
+  --font-sans: Helvetica, Arial, sans-serif;
   --paper: #dfc8a8;
   --wood: #4d2d1d;
   --wood-dark: #28160f;

@@ -3,7 +3,7 @@ import type { Metadata } from "next";
 import "@/app/globals.css";
 
 export const metadata: Metadata = {
-  title: "Static",
+  title: "Audio Obscura",
   description: "A true-random music discovery engine with late-night bedroom energy."
 };
 

@@ -18,9 +18,9 @@ import {
 } from "@/lib/types";
 import { inRange, sanitizeFilters } from "@/lib/utils";
 
-const TARGET_QUEUE_SIZE = 4;
-const MAX_QUEUE_SIZE = 8;
-const FILL_INTERVAL_MS = 2500;
+const TARGET_QUEUE_SIZE = 15;
+const MAX_QUEUE_SIZE = 15;
+const FILL_INTERVAL_MS = 1500;
 const WAIT_FOR_TRACK_MS = 45000;
 const POLL_WAIT_MS = 800;
 const LASTFM_PAGE_LIMIT = 30;
@@ -31,6 +31,7 @@ type QueueState = {
   key: string;
   filters: DiscoveryFilters;
   resolvedGenre?: string;
+  mappedFromGenre?: string;
   diagnostics: string[];
   tracks: TrackCandidate[];
   seenTrackIds: Set<string>;
@@ -44,6 +45,7 @@ type DiscoverySession = {
   key: string;
   filters: DiscoveryFilters;
   resolvedGenre?: string;
+  mappedFromGenre?: string;
   diagnostics: string[];
   queue: QueueState;
 };
@@ -345,6 +347,7 @@ async function prepareDiscoverySession(input: Partial<DiscoveryFilters>): Promis
   const sanitized = sanitizeForMatching(input);
   const genreResolution = await resolveGenreInput(sanitized.genre);
   const resolvedGenre = genreResolution.resolvedGenre?.trim();
+  const mappedFromGenre = genreResolution.mappedFromGenre;
   diagnostics.push(...genreResolution.diagnostics);
 
   if (hasRange(input.bpm ?? {})) {
@@ -365,6 +368,7 @@ async function prepareDiscoverySession(input: Partial<DiscoveryFilters>): Promis
       key,
       filters,
       resolvedGenre,
+      mappedFromGenre,
       diagnostics: [],
       tracks: [],
       seenTrackIds: new Set<string>(),
@@ -376,6 +380,7 @@ async function prepareDiscoverySession(input: Partial<DiscoveryFilters>): Promis
   } else {
     queue.filters = filters;
     queue.resolvedGenre = resolvedGenre;
+    queue.mappedFromGenre = mappedFromGenre;
     queue.lastTouchedAt = Date.now();
   }
 
@@ -386,6 +391,7 @@ async function prepareDiscoverySession(input: Partial<DiscoveryFilters>): Promis
     key,
     filters,
     resolvedGenre,
+    mappedFromGenre,
     diagnostics,
     queue
   };
@@ -410,6 +416,7 @@ export async function getDiscoveryStatus(
     return {
       configured: false,
       resolvedGenre: session.resolvedGenre,
+      mappedFromGenre: session.mappedFromGenre,
       diagnostics: [
         ...session.diagnostics,
         "Live providers are not fully configured. Set Spotify and Last.fm credentials to use discovery."
@@ -423,6 +430,7 @@ export async function getDiscoveryStatus(
   return {
     configured: true,
     resolvedGenre: session.resolvedGenre,
+    mappedFromGenre: session.mappedFromGenre,
     diagnostics: session.queue.lastError
       ? [...session.diagnostics, session.queue.lastError]
       : session.diagnostics,
@@ -454,6 +462,7 @@ export async function discoverTrack(
       return {
         track: nextTrack,
         resolvedGenre: session.resolvedGenre,
+        mappedFromGenre: session.mappedFromGenre,
         mode: "live",
         diagnostics: session.diagnostics,
         selection: {

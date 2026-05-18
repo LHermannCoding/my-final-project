@@ -29,11 +29,12 @@ export async function GET() {
   const params = new URLSearchParams({
     response_type: "code",
     client_id: process.env.SPOTIFY_CLIENT_ID,
-    scope: "streaming user-read-email user-read-private user-modify-playback-state",
+    scope: "streaming user-read-email user-read-private user-modify-playback-state user-library-modify",
     redirect_uri: redirectUri,
     state,
     code_challenge_method: "S256",
-    code_challenge: challenge
+    code_challenge: challenge,
+    show_dialog: "true"
   });
 
   const response = NextResponse.redirect(

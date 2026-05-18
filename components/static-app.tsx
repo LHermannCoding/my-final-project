@@ -11,6 +11,59 @@ import {
 } from "@/lib/types";
 import { formatNumber, formatReleaseDate } from "@/lib/utils";
 
+const PLACEHOLDER_GENRES = [
+  "dream pop",
+  "sad robot music",
+  "shoegaze",
+  "bedroom pop",
+  "slowcore",
+  "indietronica",
+  "post-punk",
+  "ambient",
+  "alt-country",
+  "synthpop",
+  "drum and bass",
+  "lo-fi jazz",
+  "noise pop",
+  "darkwave",
+  "folktronica"
+];
+
+function useTypingPlaceholder(genres: string[]): string {
+  const [display, setDisplay] = useState("");
+  const indexRef = useRef(0);
+
+  useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout>;
+
+    function type(pos: number) {
+      const genre = genres[indexRef.current];
+      if (pos <= genre.length) {
+        setDisplay(pos === genre.length ? genre + "..." : genre.slice(0, pos));
+        const delay = pos === genre.length ? 2000 : 40 + Math.random() * 40;
+        timeout = setTimeout(() => (pos === genre.length ? erase(genre.length) : type(pos + 1)), delay);
+      }
+    }
+
+    function erase(pos: number) {
+      const genre = genres[indexRef.current];
+      if (pos >= 0) {
+        setDisplay(genre.slice(0, pos));
+        timeout = setTimeout(() => erase(pos - 1), 28);
+      } else {
+        indexRef.current = (indexRef.current + 1) % genres.length;
+        timeout = setTimeout(() => type(0), 1000);
+      }
+    }
+
+    type(0);
+    return () => clearTimeout(timeout);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return display;
+}
+
 const EMPTY_FILTERS: DiscoveryFilters = {
   genre: "",
   trackPlayCount: {},
@@ -19,50 +72,6 @@ const EMPTY_FILTERS: DiscoveryFilters = {
   strictness: "balanced"
 };
 
-const FILTER_PRESETS: Array<{
-  label: string;
-  description: string;
-  filters: DiscoveryFilters;
-}> = [
-  {
-    label: "Night Rain",
-    description: "Soft, low-key, late-night cuts.",
-    filters: {
-      genre: "dream pop",
-      trackPlayCount: { max: 6000 },
-      artistListeners: { max: 5000 },
-      bpm: { min: 70, max: 110 },
-      strictness: "balanced"
-    }
-  },
-  {
-    label: "Robot Sad",
-    description: "Synthetic and slightly broken.",
-    filters: {
-      genre: "sad robot music",
-      trackPlayCount: { max: 7000 },
-      artistListeners: { max: 4000 },
-      bpm: { min: 90, max: 130 },
-      strictness: "balanced"
-    }
-  },
-  {
-    label: "Deep Niche",
-    description: "Low plays, low listeners, no mercy.",
-    filters: {
-      genre: "",
-      trackPlayCount: { max: 2500 },
-      artistListeners: { max: 1500 },
-      bpm: {},
-      strictness: "exact"
-    }
-  },
-  {
-    label: "Free Drift",
-    description: "Open the whole room back up.",
-    filters: EMPTY_FILTERS
-  }
-];
 
 type SpotifySessionPayload = {
   configured: boolean;
@@ -86,10 +95,18 @@ declare global {
         addListener: (name: string, callback: (...args: unknown[]) => void) => void;
         connect: () => Promise<boolean>;
         disconnect: () => void;
+        togglePlay: () => Promise<void>;
       };
     };
     onSpotifyWebPlaybackSDKReady?: () => void;
   }
+}
+
+function formatTime(seconds: number): string {
+  if (!seconds || !isFinite(seconds)) return "0:00";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 function NumericInput({
@@ -145,29 +162,6 @@ function WallClock({ time }: { time: Date }) {
   );
 }
 
-function StrictnessButton({
-  active,
-  label,
-  onClick
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`rounded-full px-4 py-2 text-[11px] uppercase tracking-[0.24em] transition ${
-        active
-          ? "bg-amber-200 text-stone-900"
-          : "border border-stone-400/15 bg-black/20 text-stone-200 hover:bg-black/35"
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
 
 export function StaticApp() {
   const [filters, setFilters] = useState<DiscoveryFilters>(EMPTY_FILTERS);
@@ -178,17 +172,37 @@ export function StaticApp() {
   const [isLoading, setIsLoading] = useState(false);
   const [queueStatus, setQueueStatus] = useState<DiscoveryStatusResponse["queue"] | null>(null);
   const [resolvedGenre, setResolvedGenre] = useState<string | undefined>(undefined);
+  const [mappedFromGenre, setMappedFromGenre] = useState<string | undefined>(undefined);
   const [spotifySession, setSpotifySession] = useState<SpotifySessionPayload | null>(null);
   const [spotifyPlayerReady, setSpotifyPlayerReady] = useState(false);
   const [spotifyDeviceId, setSpotifyDeviceId] = useState<string | null>(null);
   const [view, setView] = useState<"settings" | "player">("settings");
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [isTransitioning, setIsTransitioning] = useState(false);
-  const [ambientEnabled, setAmbientEnabled] = useState(true);
+  const [savedTracks, setSavedTracks] = useState<TrackCandidate[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const stored = localStorage.getItem("audio_obscura_saved");
+      return stored ? (JSON.parse(stored) as TrackCandidate[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [likedStatus, setLikedStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0);
+  const [audioDuration, setAudioDuration] = useState(0);
+  const [audioVolume, setAudioVolume] = useState(0.7);
   const [clockTime, setClockTime] = useState(() => new Date());
+  const genrePlaceholder = useTypingPlaceholder(PLACEHOLDER_GENRES);
   const audioRef = useRef<HTMLAudioElement>(null);
+  const spotifyPlayerRef = useRef<InstanceType<NonNullable<Window["Spotify"]>["Player"]> | null>(null);
+  const playbackSourceRef = useRef<"spotify" | "preview" | null>(null);
   const previewPlaybackRequestRef = useRef(0);
-  const ambientEnabledRef = useRef(ambientEnabled);
+  const historyIndexRef = useRef(0);
+  const historyRef = useRef<TrackCandidate[]>([]);
+  const isNavigatingRef = useRef(false);
+  const pendingNavRef = useRef<"back" | "next" | null>(null);
   const stormContextRef = useRef<AudioContext | null>(null);
   const stormMasterGainRef = useRef<GainNode | null>(null);
   const stormThunderIntervalRef = useRef<number | null>(null);
@@ -207,6 +221,37 @@ export function StaticApp() {
     } catch {
       return "/api/spotify/login";
     }
+  }, []);
+
+  useEffect(() => { historyRef.current = history; }, [history]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.volume = 0.7;
+
+    const onPlay = () => setIsPlaying(true);
+    const onPause = () => setIsPlaying(false);
+    const onEnded = () => { setIsPlaying(false); setAudioCurrentTime(0); };
+    audio.addEventListener("play", onPlay);
+    audio.addEventListener("pause", onPause);
+    audio.addEventListener("ended", onEnded);
+
+    const poll = setInterval(() => {
+      if (!audio.paused && isFinite(audio.currentTime)) {
+        setAudioCurrentTime(audio.currentTime);
+      }
+      if (isFinite(audio.duration) && audio.duration > 0) {
+        setAudioDuration(audio.duration);
+      }
+    }, 250);
+
+    return () => {
+      clearInterval(poll);
+      audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("pause", onPause);
+      audio.removeEventListener("ended", onEnded);
+    };
   }, []);
 
   useEffect(() => {
@@ -232,10 +277,6 @@ export function StaticApp() {
   }, []);
 
   useEffect(() => {
-    ambientEnabledRef.current = ambientEnabled;
-  }, [ambientEnabled]);
-
-  useEffect(() => {
     if (!spotifySession?.accessToken) {
       return;
     }
@@ -255,10 +296,18 @@ export function StaticApp() {
         volume: 0.7
       });
 
+      spotifyPlayerRef.current = player;
+
       player.addListener("ready", (payload: unknown) => {
         const readyPayload = payload as PlayerDeviceReadyPayload;
         setSpotifyPlayerReady(true);
         setSpotifyDeviceId(readyPayload.device_id);
+      });
+
+      player.addListener("player_state_changed", (state: unknown) => {
+        if (state && typeof state === "object" && "paused" in state) {
+          setIsPlaying(!(state as { paused: boolean }).paused);
+        }
       });
 
       player.addListener("initialization_error", () => {
@@ -344,7 +393,7 @@ export function StaticApp() {
       windLfo.start();
 
       const thunderInterval = window.setInterval(() => {
-        if (!stormContextRef.current || !stormMasterGainRef.current || !ambientEnabledRef.current) {
+        if (!stormContextRef.current || !stormMasterGainRef.current) {
           return;
         }
 
@@ -400,10 +449,10 @@ export function StaticApp() {
       return;
     }
 
-    const target = ambientEnabled && view === "settings" ? 0.22 : 0.001;
+    const target = view === "settings" ? 0.22 : 0.001;
     gainNode.gain.cancelScheduledValues(context.currentTime);
     gainNode.gain.linearRampToValueAtTime(target, context.currentTime + 0.8);
-  }, [ambientEnabled, view]);
+  }, [view]);
 
   const stats = useMemo(
     () => [
@@ -444,6 +493,7 @@ export function StaticApp() {
 
         setQueueStatus(payload.queue);
         setResolvedGenre(payload.resolvedGenre);
+        setMappedFromGenre(payload.mappedFromGenre);
 
         if (!payload.configured) {
           setStatus("Live providers are missing. Add Spotify and Last.fm credentials.");
@@ -502,6 +552,8 @@ export function StaticApp() {
         return false;
       }
 
+      playbackSourceRef.current = "preview";
+      setIsPlaying(true);
       return true;
     } catch (error) {
       if (previewPlaybackRequestRef.current !== requestId) {
@@ -518,20 +570,23 @@ export function StaticApp() {
   }
 
   async function togglePreviewPlayback() {
-    const audio = audioRef.current;
-    if (!audio) {
+    if (playbackSourceRef.current === "spotify" && spotifyPlayerRef.current) {
+      await spotifyPlayerRef.current.togglePlay();
+      setIsPlaying((prev) => !prev);
       return;
     }
+
+    const audio = audioRef.current;
+    if (!audio) return;
 
     if (!audio.paused) {
       previewPlaybackRequestRef.current += 1;
       audio.pause();
+      setIsPlaying(false);
       return;
     }
 
-    if (!currentTrack?.previewUrl) {
-      return;
-    }
+    if (!currentTrack?.previewUrl) return;
 
     await playPreview(currentTrack);
   }
@@ -560,6 +615,8 @@ export function StaticApp() {
         throw new Error("Play failed");
       }
 
+      playbackSourceRef.current = "spotify";
+      setIsPlaying(true);
       return true;
     } catch {
       setPlaybackError("Spotify playback failed. Falling back to preview audio when available.");
@@ -594,6 +651,8 @@ export function StaticApp() {
   async function pullQueuedTrack(nextFilters: DiscoveryFilters, actionLabel: string) {
     setIsLoading(true);
     setIsTransitioning(true);
+    setIsPlaying(false);
+    setAudioCurrentTime(0);
     setActiveFilters(nextFilters);
     setStatus(
       nextFilters.genre
@@ -623,11 +682,13 @@ export function StaticApp() {
       setCurrentTrack(payload.track);
       setQueueStatus(payload.queue);
       setResolvedGenre(payload.resolvedGenre);
+      setMappedFromGenre(payload.mappedFromGenre);
       setStatus(
         `Live match found${payload.resolvedGenre ? ` via ${payload.resolvedGenre}` : ""}. ` +
           `${payload.queue.queueSize} waiting in the buffer.`
       );
       setHistory((previous) => [payload.track, ...previous.filter((item) => item.id !== payload.track.id)]);
+      historyIndexRef.current = 0;
       setView("player");
 
       const playedViaSpotify = await trySpotifyPlayback(payload.track);
@@ -652,20 +713,42 @@ export function StaticApp() {
     await pullQueuedTrack(filters, "Discovery");
   }
 
-  function stepHistory(direction: "back" | "next") {
-    if (direction === "back" && history.length === 0) {
-      return;
-    }
-
-    if (direction === "back" && history.length > 1) {
-      const previousTrack = history[1];
-      setCurrentTrack(previousTrack);
+  async function executeNavigation(direction: "back" | "next") {
+    if (direction === "back") {
+      const currentHistory = historyRef.current;
+      const targetIndex = historyIndexRef.current + 1;
+      if (targetIndex >= currentHistory.length) return; // already at oldest, do nothing
+      const targetTrack = currentHistory[targetIndex];
+      historyIndexRef.current = targetIndex;
+      setCurrentTrack(targetTrack);
       setView("player");
-      void playPreview(previousTrack);
+      const playedViaSpotify = await trySpotifyPlayback(targetTrack);
+      if (!playedViaSpotify && targetTrack.previewUrl) {
+        await playPreview(targetTrack);
+      } else if (playedViaSpotify && audioRef.current) {
+        previewPlaybackRequestRef.current += 1;
+        audioRef.current.pause();
+      }
+    } else {
+      await pullQueuedTrack(activeFilters ?? filters, "Queue fetch");
+    }
+  }
+
+  function stepHistory(direction: "back" | "next") {
+    if (isNavigatingRef.current) {
+      pendingNavRef.current = direction;
       return;
     }
 
-    void pullQueuedTrack(activeFilters ?? filters, "Queue fetch");
+    isNavigatingRef.current = true;
+    pendingNavRef.current = null;
+
+    void executeNavigation(direction).finally(() => {
+      isNavigatingRef.current = false;
+      const pending = pendingNavRef.current;
+      pendingNavRef.current = null;
+      if (pending !== null) stepHistory(pending);
+    });
   }
 
   function hardReset() {
@@ -673,8 +756,10 @@ export function StaticApp() {
     setActiveFilters(null);
     setCurrentTrack(null);
     setHistory([]);
+    historyIndexRef.current = 0;
     setQueueStatus(null);
     setResolvedGenre(undefined);
+    setMappedFromGenre(undefined);
     setStatus("Set a mood and pull a track.");
     setPlaybackError(null);
     setView("settings");
@@ -687,12 +772,80 @@ export function StaticApp() {
 
   }
 
+  function toggleSaveCurrentTrack() {
+    if (!currentTrack) return;
+    setSavedTracks((prev) => {
+      const next = prev.some((t) => t.id === currentTrack.id)
+        ? prev.filter((t) => t.id !== currentTrack.id)
+        : [currentTrack, ...prev];
+      try { localStorage.setItem("audio_obscura_saved", JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
+
+  async function logoutSpotify() {
+    await fetch("/api/spotify/logout", { method: "POST" });
+    setSpotifySession((prev) => prev ? { ...prev, connected: false, accessToken: null } : null);
+    setSpotifyPlayerReady(false);
+    setSpotifyDeviceId(null);
+    spotifyPlayerRef.current?.disconnect();
+    spotifyPlayerRef.current = null;
+  }
+
+  function removeSavedTrack(id: string) {
+    setSavedTracks((prev) => {
+      const next = prev.filter((t) => t.id !== id);
+      try { localStorage.setItem("audio_obscura_saved", JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
+
+  function clearSavedTracks() {
+    setSavedTracks([]);
+    try { localStorage.removeItem("audio_obscura_saved"); } catch {}
+  }
+
+  async function likeOnSpotify() {
+    if (!currentTrack?.spotifyUri) return;
+    const trackId = currentTrack.spotifyUri.split(":")[2];
+    if (!trackId) return;
+    setLikedStatus("saving");
+    try {
+      const response = await fetch("/api/spotify/player/like", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trackId })
+      });
+      if (response.ok) {
+        setLikedStatus("saved");
+        setTimeout(() => setLikedStatus("idle"), 2500);
+      } else {
+        const body = (await response.json()) as { error?: string; details?: string };
+        const isScope = response.status === 403 || body.details?.includes("scope");
+        setPlaybackError(
+          isScope
+            ? "Spotify session is missing the library permission. Log out and reconnect Spotify to fix this."
+            : `Failed to like track: ${body.details ?? body.error ?? response.status}`
+        );
+        setLikedStatus("error");
+        setTimeout(() => setLikedStatus("idle"), 3000);
+      }
+    } catch {
+      setPlaybackError("Like request failed — check your connection.");
+      setLikedStatus("error");
+      setTimeout(() => setLikedStatus("idle"), 3000);
+    }
+  }
+
+  const isCurrentTrackSaved = currentTrack ? savedTracks.some((t) => t.id === currentTrack.id) : false;
+  const canGoBack = history.length > 1 && historyIndexRef.current < history.length - 1;
+
   return (
     <main className="relative min-h-screen overflow-hidden bg-noise wall-grid px-4 py-6 text-stone-50 md:px-8">
       <div className="absolute inset-x-0 top-0 h-48 bg-gradient-to-b from-amber-300/10 to-transparent blur-3xl" />
       <div className="absolute left-[8%] top-[18%] h-44 w-44 rounded-full bg-rose-500/10 blur-3xl" />
       <div className="absolute right-[10%] top-[8%] h-56 w-56 rounded-full bg-cyan-300/10 blur-3xl" />
-      <div className="mx-auto grid min-h-[calc(100vh-3rem)] max-w-7xl gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+      <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[1.1fr_0.9fr] lg:items-start">
         <section
           className={`scene-card relative overflow-hidden rounded-[2rem] border border-stone-400/15 bg-[linear-gradient(180deg,rgba(62,37,27,0.9),rgba(22,13,10,0.96))] p-5 shadow-2xl shadow-black/30 transition md:p-8 ${
             view === "player" ? "hidden lg:block" : "block"
@@ -701,12 +854,10 @@ export function StaticApp() {
           <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-black/25 to-transparent" />
           <div className="absolute left-0 top-0 h-full w-8 bg-gradient-to-r from-white/5 to-transparent" />
           <div className="absolute right-6 top-6 h-28 w-28 rounded-full bg-amber-300/20 blur-2xl" />
-          <div className="absolute right-8 top-24 hidden h-32 w-24 rounded-lg border border-stone-200/10 bg-[linear-gradient(180deg,rgba(255,125,95,0.3),rgba(20,12,10,0.1))] shadow-2xl lg:block" />
-          <div className="absolute right-24 top-40 hidden h-32 w-24 -rotate-6 rounded-lg border border-stone-200/10 bg-[linear-gradient(180deg,rgba(117,245,210,0.22),rgba(20,12,10,0.1))] shadow-2xl lg:block" />
-          <div className="relative flex h-full flex-col justify-between gap-8">
+          <div className="relative flex h-full flex-col justify-start gap-6">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-xs uppercase tracking-[0.35em] text-amber-200/80">Audio Obscura</p>
+                <p className="text-xs uppercase tracking-[0.35em] text-amber-200/80">Luke Hermann 2026</p>
                 <h1 className="mt-3 max-w-lg font-display text-4xl leading-none text-amber-50 md:text-6xl">
                   Audio Obscura
                 </h1>
@@ -720,14 +871,14 @@ export function StaticApp() {
               </button>
             </div>
 
-            <div className="grid gap-5 md:grid-cols-2">
+            <div className="grid gap-4 md:grid-cols-2">
               <label className="md:col-span-2">
                 <span className="mb-2 block text-xs uppercase tracking-[0.3em] text-stone-300/80">
-                  Genre or invented vibe
+                  Genre
                 </span>
                 <input
                   className="w-full rounded-2xl border border-stone-400/15 bg-black/20 px-4 py-3 text-sm text-stone-100 outline-none transition focus:border-amber-300/40 focus:bg-black/30"
-                  placeholder="sad robot music"
+                  placeholder={genrePlaceholder}
                   value={filters.genre}
                   onChange={(event) =>
                     setFilters((previous) => ({ ...previous, genre: event.target.value }))
@@ -797,57 +948,11 @@ export function StaticApp() {
               />
             </div>
 
-            <div className="grid gap-3 rounded-[1.5rem] border border-stone-400/15 bg-black/20 p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-[11px] uppercase tracking-[0.3em] text-stone-400">
-                    Queue Engine
-                  </p>
-                  <p className="mt-1 text-sm text-stone-200/75">
-                    The backend now waits for exact live matches and keeps a slow background buffer warm.
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <StrictnessButton
-                    label="Exact Live"
-                    active
-                    onClick={() =>
-                      setFilters((previous) => ({ ...previous, strictness: "exact" }))
-                    }
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-[11px] uppercase tracking-[0.3em] text-stone-400">
-                  Quick Scenes
-                </p>
-                <button
-                  type="button"
-                  onClick={hardReset}
-                  className="text-[11px] uppercase tracking-[0.24em] text-stone-300/70 transition hover:text-stone-100"
-                >
-                  Hard Reset
-                </button>
-              </div>
-              <div className="grid gap-3 md:grid-cols-2">
-                {FILTER_PRESETS.map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => setFilters(preset.filters)}
-                    className="rounded-[1.35rem] border border-stone-400/15 bg-black/20 p-4 text-left transition hover:bg-black/30"
-                  >
-                    <p className="text-sm font-semibold uppercase tracking-[0.18em] text-amber-100">
-                      {preset.label}
-                    </p>
-                    <p className="mt-2 text-sm text-stone-300/75">{preset.description}</p>
-                  </button>
-                ))}
-              </div>
-            </div>
+            {mappedFromGenre ? (
+              <p className="rounded-2xl border border-amber-300/20 bg-amber-300/8 px-4 py-3 text-xs text-amber-200/80">
+                &ldquo;{mappedFromGenre}&rdquo; not found — searching for &ldquo;{resolvedGenre}&rdquo; instead.
+              </p>
+            ) : null}
 
             <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
               <div>
@@ -860,24 +965,72 @@ export function StaticApp() {
                     : "Queue idle"}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => void discover()}
-                disabled={isLoading}
-                className={`rounded-full px-8 py-4 font-semibold uppercase tracking-[0.25em] text-stone-900 transition disabled:cursor-wait disabled:opacity-70 ${
-                  isLoading
-                    ? "bg-amber-50 shadow-[0_0_40px_rgba(255,223,169,0.45)]"
-                    : "bg-amber-200 hover:bg-amber-100"
-                }`}
-              >
-                {isLoading ? "Searching" : "Discover"}
-              </button>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={hardReset}
+                  className="rounded-full border border-stone-400/15 bg-black/20 px-5 py-4 text-xs uppercase tracking-[0.24em] text-stone-300/70 transition hover:text-stone-100 hover:bg-black/35"
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void discover()}
+                  disabled={isLoading}
+                  className={`rounded-full px-8 py-4 font-semibold uppercase tracking-[0.25em] text-stone-900 transition disabled:cursor-wait disabled:opacity-70 ${
+                    isLoading
+                      ? "bg-amber-50 shadow-[0_0_40px_rgba(255,223,169,0.45)]"
+                      : "bg-amber-200 hover:bg-amber-100"
+                  }`}
+                >
+                  {isLoading ? "Searching" : "Discover"}
+                </button>
+              </div>
             </div>
+
+            <p className="text-xs leading-relaxed text-stone-400/70">
+              Audio Obscura is a true-random music discovery engine that pulls tracks from Spotify and Last.fm against user-defined constraints — genre, play count ceiling, and artist listener range. Unlike algorithmic recommendation systems that optimize for repeated engagement, it selects matches at random from a live background queue, surfacing tracks with as few as a few hundred plays. A text-matching fallback maps unrecognized genre inputs to the closest known tag across 2,000+ genres. On the player, ☆ saves a track to your local list below and ♡ adds it directly to your Spotify Liked Songs. The result is a discovery tool built for going genuinely deep: no editorial curation, no engagement loop, just the edges of the catalog.
+            </p>
+
+            {savedTracks.length > 0 ? (
+              <div>
+                <div className="mb-3 flex items-center justify-between gap-4">
+                  <p className="text-[11px] uppercase tracking-[0.3em] text-stone-400">Saved Tracks</p>
+                  <button
+                    type="button"
+                    onClick={clearSavedTracks}
+                    className="text-[11px] uppercase tracking-[0.24em] text-stone-300/60 transition hover:text-stone-100"
+                  >
+                    Clear All
+                  </button>
+                </div>
+                <ul className="grid gap-2">
+                  {savedTracks.map((track) => (
+                    <li key={track.id} className="flex items-center gap-3 rounded-2xl border border-stone-400/10 bg-black/20 px-4 py-3">
+                      {track.albumArtUrl ? (
+                        <Image src={track.albumArtUrl} alt={track.album} width={36} height={36} className="flex-shrink-0 rounded-md object-cover opacity-80" />
+                      ) : (
+                        <div className="h-9 w-9 flex-shrink-0 rounded-md bg-stone-700/50" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm text-stone-100">{track.title}</p>
+                        <p className="truncate text-xs text-stone-400">{track.artist}</p>
+                      </div>
+                      {track.externalUrl ? (
+                        <a href={track.externalUrl} target="_blank" rel="noreferrer" className="flex-shrink-0 text-xs text-stone-400 transition hover:text-stone-100" title="Open in Spotify">↗</a>
+                      ) : null}
+                      <button type="button" onClick={() => removeSavedTrack(track.id)} className="flex-shrink-0 text-xs text-stone-500 transition hover:text-rose-300" title="Remove">✕</button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
 
           </div>
         </section>
 
         <section
+          style={{ fontFamily: '"Trebuchet MS", "Avenir Next", "Segoe UI", sans-serif' }}
           className={`scene-card relative min-h-[720px] items-center justify-center overflow-hidden rounded-[2.5rem] border border-stone-400/15 bg-[radial-gradient(circle_at_top,rgba(255,193,121,0.24),transparent_25%),linear-gradient(180deg,#21120b,#110b0d)] p-4 shadow-glow ${
             view === "settings" ? "hidden lg:flex" : "flex"
           }`}
@@ -933,13 +1086,6 @@ export function StaticApp() {
           <div className="absolute bottom-[15rem] right-36 hidden h-14 w-14 rounded-[0.85rem] border border-stone-200/10 bg-[linear-gradient(180deg,rgba(237,237,242,0.75),rgba(120,124,144,0.62))] shadow-lg lg:block">
             <div className="absolute left-2 top-2 text-[8px] uppercase tracking-[0.28em] text-stone-900/70">mp3</div>
           </div>
-          <button
-            type="button"
-            onClick={() => setAmbientEnabled((value) => !value)}
-            className="absolute bottom-7 left-1/2 z-10 hidden -translate-x-1/2 rounded-full border border-stone-200/15 bg-black/30 px-4 py-2 text-[11px] uppercase tracking-[0.24em] text-stone-100/80 transition hover:bg-black/45 lg:block"
-          >
-            {ambientEnabled ? "Storm Loop On" : "Storm Loop Off"}
-          </button>
 
           <div
             className={`float-slow relative w-full max-w-xl rounded-[2.5rem] bg-[#2a211f] p-5 shadow-[0_30px_60px_rgba(0,0,0,0.45)] transition duration-500 md:p-7 ${
@@ -1017,98 +1163,170 @@ export function StaticApp() {
                 )}
               </div>
 
-              <div className="mt-5 grid gap-4 md:grid-cols-[1fr_auto] md:items-center">
-                <div className="rounded-[1.5rem] border border-stone-300/10 bg-black/30 p-4">
-                  <div className="flex flex-wrap gap-3">
+              <div className="mt-5 rounded-[1.5rem] border border-stone-300/10 bg-black/30 p-4 grid gap-4">
+
+                {/* Row 1: transport buttons left, save/like buttons right */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
                       onClick={() => stepHistory("back")}
-                      className="dial h-14 w-14 rounded-full text-lg text-amber-50 transition hover:scale-105"
+                      disabled={!canGoBack}
+                      className="dial h-12 w-12 rounded-full text-base text-amber-50 transition hover:scale-105 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100"
                     >
                       ⏮
                     </button>
                     <button
                       type="button"
                       onClick={() => void togglePreviewPlayback()}
-                      className="dial h-14 w-14 rounded-full text-lg text-amber-50 transition hover:scale-105"
+                      className="dial h-12 w-12 rounded-full text-base text-amber-50 transition hover:scale-105"
                     >
-                      ⏯
+                      {isPlaying ? "⏸" : "▶"}
                     </button>
                     <button
                       type="button"
                       onClick={() => stepHistory("next")}
-                      className="dial h-14 w-14 rounded-full text-lg text-amber-50 transition hover:scale-105"
+                      className="dial h-12 w-12 rounded-full text-base text-amber-50 transition hover:scale-105"
                     >
                       ⏭
                     </button>
                   </div>
-
-                  <audio ref={audioRef} controls className="mt-4 w-full opacity-80" />
-
-                  <div className="mt-3 flex flex-wrap gap-2 text-xs text-stone-300/75">
-                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      Queue {queueStatus ? `${queueStatus.queueSize}/${queueStatus.targetSize}` : "idle"}
-                    </span>
-                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      Spotify {spotifySession?.connected ? "connected" : "not connected"}
-                    </span>
-                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      SDK {spotifyPlayerReady ? "ready" : "idle"}
-                    </span>
-                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      Device {spotifyDeviceId ? "captured" : "none"}
-                    </span>
-                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      Preview {currentTrack?.previewUrl ? "available" : "missing"}
-                    </span>
-                    <span className="rounded-full border border-stone-400/15 px-3 py-1">
-                      Engine {queueStatus?.isFilling || isLoading ? "warming" : "ready"}
-                    </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={toggleSaveCurrentTrack}
+                      disabled={!currentTrack}
+                      title={isCurrentTrackSaved ? "Remove from saved" : "Save to list"}
+                      className={`dial h-12 w-12 rounded-full text-base transition hover:scale-105 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100 ${
+                        isCurrentTrackSaved ? "text-amber-300" : "text-amber-50"
+                      }`}
+                    >
+                      {isCurrentTrackSaved ? "★" : "☆"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void likeOnSpotify()}
+                      disabled={!currentTrack || !spotifySession?.connected || likedStatus === "saving"}
+                      title="Add to Spotify Liked Songs"
+                      className={`dial h-12 w-12 rounded-full text-base transition hover:scale-105 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:scale-100 ${
+                        likedStatus === "saved" ? "text-emerald-300" : likedStatus === "error" ? "text-rose-300" : "text-amber-50"
+                      }`}
+                    >
+                      {likedStatus === "saved" ? "♥" : likedStatus === "error" ? "✕" : "♡"}
+                    </button>
                   </div>
-
-                  {!spotifySession?.connected ? (
-                    <p className="mt-3 text-xs text-amber-200/85">
-                      Song playback on the web page only works when Spotify is connected.
-                    </p>
-                  ) : null}
-
-                  {playbackError ? <p className="mt-3 text-xs text-rose-300">{playbackError}</p> : null}
                 </div>
 
-                <div className="grid gap-3">
-                  {spotifySession?.configured && !spotifySession?.connected ? (
-                    <a
-                      href={spotifyLoginHref}
-                      className="rounded-full border border-emerald-200/20 bg-emerald-300/10 px-5 py-3 text-center text-xs font-semibold uppercase tracking-[0.25em] text-emerald-100 transition hover:bg-emerald-300/20"
-                    >
-                      Connect Spotify
-                    </a>
-                  ) : spotifySession?.connected ? (
-                    <div className="rounded-[1.4rem] border border-emerald-200/18 bg-emerald-300/10 px-4 py-3 text-center text-[11px] uppercase tracking-[0.22em] text-emerald-100/85">
-                      Spotify Connected
+                {/* Row 2: Open Track */}
+                {currentTrack?.externalUrl ? (
+                  <a
+                    href={currentTrack.externalUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-full border border-stone-300/15 bg-black/25 py-2.5 text-center text-xs font-semibold uppercase tracking-[0.25em] text-stone-100 transition hover:bg-black/40"
+                  >
+                    Open Track
+                  </a>
+                ) : null}
+
+                {/* Row 3: Spotify status / connect / logout */}
+                {spotifySession?.configured && !spotifySession?.connected ? (
+                  <a
+                    href={spotifyLoginHref}
+                    className="rounded-full border border-emerald-200/20 bg-emerald-300/10 py-2.5 text-center text-xs font-semibold uppercase tracking-[0.25em] text-emerald-100 transition hover:bg-emerald-300/20"
+                  >
+                    Connect Spotify
+                  </a>
+                ) : spotifySession?.connected ? (
+                  <button
+                    type="button"
+                    onClick={() => void logoutSpotify()}
+                    className="rounded-full border border-emerald-200/18 bg-emerald-300/10 py-2.5 text-center text-xs uppercase tracking-[0.22em] text-emerald-100/85 transition hover:bg-rose-300/15 hover:text-rose-200 hover:border-rose-300/20"
+                  >
+                    Spotify Connected · Log Out
+                  </button>
+                ) : (
+                  <div className="rounded-full border border-stone-300/12 bg-black/25 py-2.5 text-center text-xs uppercase tracking-[0.22em] text-stone-300/70">
+                    Live Queue Only
+                  </div>
+                )}
+
+                {/* Row 4: audio element + custom controls */}
+                <audio ref={audioRef} preload="metadata" />
+                <div className="grid gap-2">
+                  <input
+                    type="range"
+                    min={0}
+                    max={audioDuration > 0 ? audioDuration : 1}
+                    step={1}
+                    value={Math.floor(audioCurrentTime)}
+                    disabled={audioDuration === 0}
+                    onChange={(e) => {
+                      const t = Number(e.target.value);
+                      setAudioCurrentTime(t);
+                      if (audioRef.current) audioRef.current.currentTime = t;
+                    }}
+                    className="w-full accent-amber-300 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                  />
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs tabular-nums text-stone-400">
+                      {formatTime(audioCurrentTime)} / {formatTime(audioDuration)}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-stone-400">Vol</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={audioVolume}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setAudioVolume(v);
+                          if (audioRef.current) audioRef.current.volume = v;
+                        }}
+                        className="w-20 accent-amber-300 cursor-pointer"
+                      />
                     </div>
-                  ) : (
-                    <div className="rounded-[1.4rem] border border-stone-300/12 bg-black/25 px-4 py-3 text-center text-[11px] uppercase tracking-[0.22em] text-stone-300/70">
-                      Live Queue Only
-                    </div>
-                  )}
-                  {currentTrack?.externalUrl ? (
-                    <a
-                      href={currentTrack.externalUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="rounded-full border border-stone-300/15 bg-black/25 px-5 py-3 text-center text-xs font-semibold uppercase tracking-[0.25em] text-stone-100 transition hover:bg-black/40"
-                    >
-                      Open Track
-                    </a>
-                  ) : null}
+                  </div>
                 </div>
+
+                <div className="flex flex-wrap gap-2 text-xs text-stone-300/75">
+                  <span className="rounded-full border border-stone-400/15 px-3 py-1">
+                    Queue {queueStatus ? `${queueStatus.queueSize}/${queueStatus.targetSize}` : "idle"}
+                  </span>
+                  <span className="rounded-full border border-stone-400/15 px-3 py-1">
+                    Spotify {spotifySession?.connected ? "connected" : "not connected"}
+                  </span>
+                  <span className="rounded-full border border-stone-400/15 px-3 py-1">
+                    SDK {spotifyPlayerReady ? "ready" : "idle"}
+                  </span>
+                  <span className="rounded-full border border-stone-400/15 px-3 py-1">
+                    Device {spotifyDeviceId ? "captured" : "none"}
+                  </span>
+                  <span className="rounded-full border border-stone-400/15 px-3 py-1">
+                    Preview {currentTrack?.previewUrl ? "available" : "missing"}
+                  </span>
+                  <span className="rounded-full border border-stone-400/15 px-3 py-1">
+                    Engine {queueStatus?.isFilling || isLoading ? "warming" : "ready"}
+                  </span>
+                </div>
+
+                {!spotifySession?.connected ? (
+                  <p className="text-xs text-amber-200/85">
+                    Song playback on the web page only works when Spotify is connected.
+                  </p>
+                ) : null}
+
+                {playbackError ? <p className="text-xs text-rose-300">{playbackError}</p> : null}
+
               </div>
 
             </div>
           </div>
         </section>
       </div>
+
     </main>
   );
 }
