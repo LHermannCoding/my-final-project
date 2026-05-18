@@ -870,7 +870,7 @@ export function StaticApp() {
         const isScope = response.status === 403 || body.details?.includes("scope");
         setPlaybackError(
           isScope
-            ? "Spotify session is missing the library permission. Log out and reconnect Spotify to fix this."
+            ? "Spotify is missing the library permission. Go to spotify.com/account/apps → remove this app → then reconnect here to grant full access."
             : `Failed to like track: ${body.details ?? body.error ?? response.status}`
         );
         setLikedStatus("error");
